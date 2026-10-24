@@ -1,0 +1,116 @@
+/**
+ * 日历网格的纯日期计算。
+ *
+ * 刻意只用 UTC 做日期加减：Date 的本地时区语义在夏令时切换时会让「加一天」出错，
+ * 而 UTC 没有夏令时，日期网格永远稳定。
+ */
+
+export interface MonthGridCell {
+  /** YYYY-MM-DD */
+  dateKey: string;
+  day: number;
+  inMonth: boolean;
+}
+
+export interface MonthGrid {
+  year: number;
+  month: number;
+  weeks: MonthGridCell[][];
+  /** 网格首日（可能属于上个月） */
+  startDateKey: string;
+  /** 网格末日（可能属于下个月） */
+  endDateKey: string;
+}
+
+/** 中国采用固定 UTC+8，无夏令时，因此可以直接拼偏移量。 */
+export const APP_TIMEZONE = 'Asia/Shanghai';
+export const APP_UTC_OFFSET = '+08:00';
+
+function pad(value: number): string {
+  return value < 10 ? `0${value}` : String(value);
+}
+
+function toKey(date: Date): string {
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+
+/**
+ * 生成月视图网格：周一为一周起点（中文习惯），**行数按实际需要**（5 行或 6 行）。
+ *
+ * 刻意不固定 6 行：固定 6 行会把整周都不属于本月的那一周也画进来
+ * （例如 2026 年 9 月会带上 10/5–10/11），用户看到的是「上个月/下个月的日历」，
+ * 而不是「9 月」。首行永远含本月 1 号，末行永远含本月最后一天，中间不补空行。
+ */
+export function buildMonthGrid(year: number, month: number): MonthGrid {
+  const first = new Date(Date.UTC(year, month - 1, 1));
+  // getUTCDay(): 0=周日；转成「周一为 0」的偏移量
+  const offset = (first.getUTCDay() + 6) % 7;
+  const start = new Date(Date.UTC(year, month - 1, 1 - offset));
+
+  // 本月最后一天；再往后补到当周周日，补齐的那几天至少有一天属于本月
+  const last = new Date(Date.UTC(year, month, 0));
+  const trailing = 6 - ((last.getUTCDay() + 6) % 7);
+  // 注意用 setUTCDate 而不是 Date.UTC(year, month, ...)：month 是 1 基的，
+  // 当成 0 基传进去会整体多算一个月（曾经把 9 月的末行算到了 11 月）
+  const end = new Date(last.getTime());
+  end.setUTCDate(last.getUTCDate() + trailing);
+
+  const totalDays = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
+  const weekCount = totalDays / 7;
+
+  const weeks: MonthGridCell[][] = [];
+  for (let week = 0; week < weekCount; week += 1) {
+    const row: MonthGridCell[] = [];
+    for (let day = 0; day < 7; day += 1) {
+      const current = new Date(start);
+      current.setUTCDate(start.getUTCDate() + week * 7 + day);
+      row.push({
+        dateKey: toKey(current),
+        day: current.getUTCDate(),
+        inMonth: current.getUTCMonth() + 1 === month,
+      });
+    }
+    weeks.push(row);
+  }
+
+  return { year, month, weeks, startDateKey: toKey(start), endDateKey: toKey(end) };
+}
+
+/** 月份加减，跨年自动处理。 */
+export function shiftMonth(year: number, month: number, delta: number): { year: number; month: number } {
+  const total = year * 12 + (month - 1) + delta;
+  return { year: Math.floor(total / 12), month: (total % 12) + 1 };
+}
+
+/** 把日期键转成带时区偏移的 ISO 时刻，用于范围查询。 */
+export function dateKeyToIso(dateKey: string, endOfDay = false): string {
+  const time = endOfDay ? '23:59:59' : '00:00:00';
+  return `${dateKey}T${time}${APP_UTC_OFFSET}`;
+}
+
+export function monthLabel(year: number, month: number): string {
+  return `${year} 年 ${month} 月`;
+}
+
+/**
+ * 校验 `YYYY-MM-DD`，并且必须是真实存在的一天。
+ *
+ * 只做正则不够：`2026-02-30` 形状正确但不存在，
+ * 放过去会在后端变成一个莫名其妙的 400，用户完全不知道哪里错了。
+ */
+export function isValidDateKey(value: string): boolean {
+  const matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!matched) {
+    return false;
+  }
+  const [year, month, day] = [Number(matched[1]), Number(matched[2]), Number(matched[3])];
+  if (month < 1 || month > 12 || day < 1) {
+    return false;
+  }
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
+}
+
+export const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日'] as const;

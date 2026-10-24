@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一分支的新推送取消上一次未完成的运行
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端（Java 21）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # 测试自带嵌入式 PostgreSQL 与嵌入式 Redis，因此不需要 service 容器，
+      # 也不需要任何外部依赖即可跑完整集成测试。
+      # OpenApiContractTest 会校验 contract/api-contract.json 的覆盖与鉴权行为，
+      # 因此这一步同时是契约门禁。
+      - name: 构建与测试
+        run: mvn -B clean verify
+        working-directory: backend-java
+
+      - name: 上传 OpenAPI 文档
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi
+          path: backend-java/chronoflow-bootstrap/target/openapi/chronoflow-api.json
+          if-no-files-found: error
+
+  frontend:
+    name: 前端（design-tokens / web-admin / app）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # 顺序有依赖：web-admin 与 app 都消费 design-tokens 的构建产物
+      - name: 构建设计令牌
+        run: npm run build -w @chronoflow/design-tokens
+
+      - name: 构建 Web 后台
+        run: npm run build -w @chronoflow/web-admin
+
+      - name: App 类型检查
+        run: npm run typecheck
+
+      # 令牌、Web 后台、App 逻辑层的全部单测
+      - name: 运行测试
+        run: npm test
+
+  backend-python:
+    name: 后端（Python）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # CI 上有 root，直接装 PostgreSQL 与 Redis；本地环境没有 root，
+      # 因此本地走 scripts/setup-test-deps.sh 从 Maven 仓库里的嵌入式 jar 提取二进制。
+      - name: 安装 PostgreSQL 与 Redis
+        run: sudo apt-get update && sudo apt-get install -y postgresql redis-server
+
+      - name: 定位 PostgreSQL 二进制
+        run: echo "CHRONOFLOW_PG_BIN=$(dirname "$(find /usr/lib/postgresql -name pg_ctl | head -1)")" >> "$GITHUB_ENV"
+
+      - name: 安装依赖
+        run: pip install -e ".[dev]"
+        working-directory: backend-python
+
+      # 测试会启动真实 PostgreSQL 与 Redis，并直接应用 Flyway 迁移文件建表，
+      # 因此 Python 版与 Java 版跑在完全相同的 schema 上。
+      # test_contract.py 读取与 Java 版同一份 contract/api-contract.json。
+      - name: 运行测试
+        run: python -m pytest
+        working-directory: backend-python
+
+  compliance:
+    name: 上架合规门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # 依据应用宝《隐私政策提交内容及审核规范》（spec §12 / docs/legal/compliance-checklist.md）。
+      # 每个版本都要过：合规文本是否齐全且同源、首启弹窗、非默认勾选、注销入口、
+      # 契约与两版后端是否真的实现了 /legal 与 /me/deletion。
+      # 不加 --strict：仓库本身允许保留【待替换：联系方式】占位，提交审核前再本地跑 --strict。
+      - name: 检查合规
+        run: python3 scripts/check_compliance.py

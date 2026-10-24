@@ -1,0 +1,559 @@
+import { useEffect, useState } from 'react';
+import { userFacingError } from '../../../shared/errors';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+
+import type { EventDetail } from '../../../shared/api';
+import { Card, Screen } from '../../../shared/ui';
+import { WheelLayer } from '../components/WheelLayer';
+import { WheelDatePicker } from '../components/WheelDatePicker';
+import { WheelTimePicker } from '../components/WheelTimePicker';
+import {
+  EditorHeader,
+  FormInput,
+  FormRow,
+  FormRowValue,
+  FormRowText,
+  FormTextArea,
+} from '../../../shared/ui';
+import { useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
+import {
+  buildCreatePayload,
+  buildUpdatePayload,
+  DEFAULT_EVENT_TIME,
+  draftFromEvent,
+  emptyDraft,
+  eventDateKey,
+  validateDraft,
+  type EventDraft,
+} from '../domain/eventDraft';
+import { buildRrule, describeRecurrence, parseRrule, type Recurrence } from '../domain/recurrence';
+import {
+  describeReminderSound,
+  describeReminders,
+  normalizeReminders,
+  persistReminderSettings,
+  parseReminderSound,
+  refreshLocalReminders,
+  type ReminderSound,
+} from '../../notifications';
+import type {
+  PlaceSelection,
+  RecurrenceSelection,
+  ReminderSelection,
+} from '../domain/editorSelection';
+
+/**
+ * 二级页回传（地点 / 重复 / 提醒）由 `editorSelection.ts` 统一定义：
+ * 日程与待办两个编辑页共用同一套「version 变了才算改过」的语义。
+ */
+export type {
+  PlaceSelection,
+  RecurrenceSelection,
+  ReminderSelection,
+} from '../domain/editorSelection';
+
+/**
+ * 新建 / 编辑日程：**独立整页**，不是弹窗（spec §4.1.5 / §7.6.7）。
+ *
+ * 新建与编辑共用同一个页面：字段完全一致，分成两个页面只会让两边逐渐长歪。
+ * 差别只在标题、保存走 POST 还是 PATCH、以及编辑态多一个删除入口。
+ *
+ * 日期不在这里选——新建时取「在日历上选中的那天」，编辑时取日程自己的日期，
+ * 少一个控件少一次误操作。
+ */
+export function EventEditorScreen({
+  dateKey: initialDateKey,
+  eventId,
+  occurrenceDate,
+  initialDraft,
+  placeSelection,
+  recurrenceSelection,
+  reminderSelection,
+  onPickLocation,
+  onPickRecurrence,
+  onPickReminder,
+  onDraftSaved,
+  onCancel,
+  onSaved,
+}: {
+  dateKey: string;
+  /** 传了就是编辑已有日程 */
+  eventId?: number;
+  /**
+   * **草稿模式**：用这份草稿起步，保存**不写服务端**，而是通过 `onDraftSaved` 交回调用方。
+   * 图片识别的确认页用它来「像编辑日程一样编辑一条识别出来的草稿」。
+   */
+  initialDraft?: EventDraft;
+  /** 重复日程里被点开的那一次，用于「仅此一次」的编辑/删除 */
+  occurrenceDate?: string | null;
+  placeSelection: PlaceSelection;
+  recurrenceSelection: RecurrenceSelection;
+  reminderSelection: ReminderSelection;
+  onPickLocation: () => void;
+  /** 第二个参数是日程自己的日期（编辑时可能与列表页选中的那天不同） */
+  onPickRecurrence: (current: Recurrence, startDateKey: string) => void;
+  onPickReminder: (current: { minutes: number[]; sound: ReminderSound }) => void;
+  /** 草稿模式下的「保存」：把改好的草稿与日期交回调用方（不落库） */
+  onDraftSaved?: (draft: EventDraft, dateKey: string) => void;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const theme = useAppTheme();
+  const { api, reminders } = useRuntime();
+  const { notificationEnabled, reminderSound: defaultReminderSound } = useAppSessionState();
+  const isEdit = typeof eventId === 'number';
+  /** 草稿模式：编辑的是「还没落库的识别结果」，不是服务端上的一条日程 */
+  const draftMode = onDraftSaved !== undefined;
+
+  const [draft, setDraft] = useState<EventDraft>(() => initialDraft ?? emptyDraft());
+  const [dateKey, setDateKey] = useState(initialDateKey);
+  const [detail, setDetail] = useState<EventDetail | null>(null);
+  /**
+   * 打开编辑页时服务端上的提醒设置。
+   *
+   * 存一份是为了「没改过就不多发一次 PUT」：`PUT /reminders` 是整体覆盖，
+   * 每次保存都发一遍虽然结果一样，但会给服务端多一次无谓的删除 + 插入。
+   */
+  const [initialReminders, setInitialReminders] = useState<number[]>([]);
+  /**
+   * 提醒方式（静音 / 消息提醒 / 闹钟），**按这条日程走**。
+   *
+   * 新建日程时初值是「我的 → 偏好」里的默认档；编辑已有日程时由服务端给的档位覆盖。
+   * 存两份（当前值 + 初始值）是为了「没改过就不多发一次 PUT」——只改档位没改提前量也算改过。
+   */
+  const [reminderSound, setReminderSound] = useState<ReminderSound>(defaultReminderSound);
+  const [initialReminderSound, setInitialReminderSound] =
+    useState<ReminderSound>(defaultReminderSound);
+  /** 正在用滚轮改哪个时间（null = 没开选择层）；`draft` 是滚轮里的临时值 */
+  const [timePickerOpen, setTimePickerOpen] = useState(false);
+  const [timeDraft, setTimeDraft] = useState(DEFAULT_EVENT_TIME);
+  /** 草稿模式下日期也能在页内改（新建日程时日期来自日历，没有这一步） */
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [dateDraft, setDateDraft] = useState(initialDateKey);
+  const [loading, setLoading] = useState(isEdit && !draftMode);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // 编辑态先把已有内容拉回来预填
+  useEffect(() => {
+    if (!isEdit || eventId === undefined || draftMode) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const loaded = await api.eventDetail(eventId);
+        if (cancelled) {
+          return;
+        }
+        setDetail(loaded);
+        setDraft(draftFromEvent(loaded));
+        // 日程自己的日期，而不是列表页选中的那天——编辑时两者可能不同
+        setDateKey(eventDateKey(loaded));
+        /**
+         * 提醒不在 event 行上（spec §4.5 的分工）：`draftFromEvent` 只能给空数组，
+         * 真正的值要单独拉一次 `GET /reminders`。
+         *
+         * 拉失败不能让整页打不开 —— 日程本身已经拿到了，提醒显示成「不提醒」，
+         * 用户改完保存时看到的也是这一份，不会莫名覆盖掉服务端的数据。
+         */
+        try {
+          const reminders = await api.reminders('EVENT', eventId);
+          if (cancelled) {
+            return;
+          }
+          const minutes = normalizeReminders(reminders.map((item) => item.minutesBefore));
+          const sound = parseReminderSound(reminders[0]?.sound);
+          setInitialReminders(minutes);
+          setInitialReminderSound(sound);
+          setReminderSound(sound);
+          setDraft((current) => ({ ...current, reminders: minutes }));
+        } catch {
+          // 提醒读不到就当没有，不打断编辑
+        }
+      } catch (cause) {
+        if (!cancelled) {
+          setError(userFacingError(cause, '加载日程失败'));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, eventId, isEdit]);
+
+  // 从地点选择页返回时把结果并进草稿。依赖 version 而不是 place：
+  // 连续两次选「不设地点」时 place 都是 null，只比值无法触发同步。
+  useEffect(() => {
+    if (placeSelection.version === 0) {
+      return;
+    }
+    setDraft((current) => ({ ...current, place: placeSelection.place }));
+  }, [placeSelection.version, placeSelection.place]);
+
+  // 从重复规则页返回：只有「按了完成」才会带上 recurrence（version +1）
+  useEffect(() => {
+    if (recurrenceSelection.version === 0 || !recurrenceSelection.recurrence) {
+      return;
+    }
+    // 不重复要提交空串而不是 null：PATCH 里 null 是「不修改」（spec §4.1.4）
+    const rrule = buildRrule(recurrenceSelection.recurrence) ?? '';
+    setDraft((current) => ({ ...current, rrule }));
+  }, [recurrenceSelection.version, recurrenceSelection.recurrence]);
+
+  // 从提醒页返回（同样只在按下「完成」时才生效）
+  useEffect(() => {
+    if (reminderSelection.version === 0) {
+      return;
+    }
+    setDraft((current) => ({ ...current, reminders: normalizeReminders(reminderSelection.minutes) }));
+    setReminderSound(reminderSelection.sound);
+  }, [reminderSelection.version, reminderSelection.minutes, reminderSelection.sound]);
+
+  /**
+   * 改动草稿时顺手清掉上一次的错误提示。
+   *
+   * 原先只在「保存」里 setError(null)：用户在模拟器上把时间改对了，
+   * 红字「时间格式应为 HH:mm」还挂在屏幕上，看起来像仍然没改对。
+   */
+  const patch = (next: Partial<EventDraft>) => {
+    setDraft((current) => ({ ...current, ...next }));
+    setError(null);
+  };
+  const openTimePicker = () => {
+    setTimeDraft(draft.time);
+    setTimePickerOpen(true);
+  };
+  const confirmTimePicker = () => {
+    // 日程只有一个时间（spec §4.1.2）：拨一次就够
+    patch({ time: timeDraft });
+    setTimePickerOpen(false);
+  };
+  const openDatePicker = () => {
+    setDateDraft(dateKey);
+    setDatePickerOpen(true);
+  };
+  const confirmDatePicker = () => {
+    setDateKey(dateDraft);
+    setDatePickerOpen(false);
+  };
+
+  const isRecurring = Boolean(detail?.rrule);
+
+  /** 编辑页「重复」行：由 RRULE 解析回来（解析不出的串按「不重复」显示，见 domain/recurrence） */
+  const recurrence = parseRrule(draft.rrule, dateKey);
+  const recurrenceSummary = describeRecurrence(recurrence);
+
+  const persist = async (scope: 'THIS' | 'ALL') => {
+    setSaving(true);
+    setError(null);
+    try {
+      // 草稿模式：草稿还没落库，保存只是把结果交回调用方（确认页），不发任何写请求
+      if (onDraftSaved) {
+        onDraftSaved(draft, dateKey);
+        return;
+      }
+      let savedId: number;
+      const payload = buildCreatePayload(dateKey, draft);
+      if (eventId === undefined) {
+        const created = await api.createEvent(payload);
+        savedId = created.id;
+      } else {
+        await api.updateEvent(eventId, {
+          ...buildUpdatePayload(dateKey, draft),
+          scope,
+          occurrenceDate: scope === 'THIS' ? occurrenceDate ?? null : null,
+        });
+        savedId = eventId;
+      }
+      /**
+       * 提醒是整体覆盖（`PUT /reminders`）。只在真的改过时才发：
+       * 没改也发一遍虽然结果一样，但会让「保存」这个动作多一次没必要的写。
+       */
+      try {
+        await persistReminderSettings({
+          api,
+          targetType: 'EVENT',
+          targetId: savedId,
+          minutes: draft.reminders,
+          initialMinutes: initialReminders,
+          sound: reminderSound,
+          initialSound: initialReminderSound,
+        });
+        setInitialReminders(normalizeReminders(draft.reminders));
+        setInitialReminderSound(reminderSound);
+      } catch (cause) {
+        // 日程已经存下了。这里**不能**当作「保存失败」整条回滚口吻提示，
+        // 也不能直接返回列表（用户看不到问题、更没法重试）
+        setError(
+          `日程已保存，但提醒没有存上：${userFacingError(cause, '请稍后重试')}`,
+        );
+        return;
+      }
+      /**
+       * 本机排期跟着走。
+       *
+       * 不做「本地推算这次改了什么」：重复日程的展开在服务端，删除 / 跨设备改动
+       * 也在服务端，本地推算总有漏掉的路径。统一拉一次未来排期再对齐。
+       */
+      const local = await refreshLocalReminders({
+        api,
+        scheduler: reminders,
+        enabled: notificationEnabled,
+      });
+      if (local.permissionDenied && draft.reminders.length > 0) {
+        // 设置存下了、但通知响不了，必须说清楚，否则用户会以为「提醒坏了」
+        Alert.alert('提醒不会响', '系统还没允许本应用发送通知，请在系统设置里打开通知权限。');
+      }
+      onSaved();
+    } catch (cause) {
+      setError(userFacingError(cause, '保存失败'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const save = async () => {
+    const validation = validateDraft(draft);
+    if (!validation.ok) {
+      setError(validation.message);
+      return;
+    }
+    // 重复日程要问清楚改哪一段：改错范围会连带改掉用户没打算动的那些天
+    if (isEdit && isRecurring) {
+      Alert.alert('这条日程是重复日程', '本次修改应用到哪一段？', [
+        { text: '取消', style: 'cancel' },
+        { text: '仅此一次', onPress: () => void persist('THIS') },
+        { text: '整个系列', onPress: () => void persist('ALL') },
+      ]);
+      return;
+    }
+    await persist('ALL');
+  };
+
+  const remove = () => {
+    if (eventId === undefined) {
+      return;
+    }
+    const run = async (scope: 'THIS' | 'ALL') => {
+      setSaving(true);
+      setError(null);
+      try {
+        await api.deleteEvent(eventId, scope, scope === 'THIS' ? occurrenceDate ?? undefined : undefined);
+        /**
+         * 删除的日程不能留着提醒在系统里响（用户会以为是幽灵通知）：
+         * 重排一次即可 —— 服务端已经不再返回它，对齐时本机那条会被取消。
+         */
+        await refreshLocalReminders({ api, scheduler: reminders, enabled: notificationEnabled });
+        onSaved();
+      } catch (cause) {
+        setError(userFacingError(cause, '删除失败'));
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    if (isRecurring) {
+      Alert.alert('删除重复日程', '要删除哪一段？', [
+        { text: '取消', style: 'cancel' },
+        { text: '仅此一次', onPress: () => void run('THIS') },
+        { text: '整个系列', style: 'destructive', onPress: () => void run('ALL') },
+      ]);
+      return;
+    }
+    Alert.alert('删除这条日程？', '删除后无法恢复。', [
+      { text: '取消', style: 'cancel' },
+      { text: '删除', style: 'destructive', onPress: () => void run('ALL') },
+    ]);
+  };
+
+  if (loading) {
+    return (
+      <Screen>
+        <EditorHeader title="编辑日程" onCancel={onCancel} onSave={() => {}} saving />
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator color={theme.color.accent} />
+        </View>
+      </Screen>
+    );
+  }
+
+  return (
+    <Screen>
+      <EditorHeader
+        title={draftMode ? '编辑草稿' : isEdit ? '编辑日程' : '新建日程'}
+        // 取消就是取消：不再弹「放弃未保存的修改？」——用户已经明确表达要退出了
+        onCancel={onCancel}
+        onSave={() => void save()}
+        saving={saving}
+        saveLabel={draftMode ? '完成' : '保存'}
+      />
+
+      <ScrollView
+        contentContainerStyle={{ padding: theme.spacing.md, paddingBottom: theme.spacing.xxl }}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Card>
+          <FormInput
+            value={draft.title}
+            onChangeText={(title) => patch({ title })}
+            placeholder="日程标题"
+            accessibilityLabel="日程标题"
+            fontSize={18}
+            autoFocus={!isEdit}
+          />
+        </Card>
+
+        <View style={{ marginTop: theme.spacing.md }}>
+          <Card>
+            {/* 新建日程时日期来自日历（少一个控件少一次误操作）；草稿模式没有那一步，所以日期可点 */}
+            <FormRow label="日期" onPress={draftMode ? openDatePicker : undefined}>
+              {draftMode ? (
+                <FormRowValue text={dateKey} placeholder="选择日期" />
+              ) : (
+                <Text style={{ color: theme.color.textPrimary, fontSize: 15 }}>{dateKey}</Text>
+              )}
+            </FormRow>
+
+            {/* 时间用滚轮选：手打 HH:mm 在手机上又慢又容易错（spec §4.1.5）。
+                没有「全天」开关：日程只有一个时间点，**必须拨到一个明确的时刻**，
+                00:00 就是凌晨零点（2026-10-01 起不再表示「只说了哪一天」）。 */}
+            <FormRow label="时间" onPress={openTimePicker}>
+              <FormRowValue text={draft.time} placeholder="09:00" />
+            </FormRow>
+
+            {/* 重复与提醒各进一个二级页面：字段多、还要返回栈（spec §4.1.5） */}
+            <FormRow
+              label="重复"
+              onPress={() => onPickRecurrence(recurrence, dateKey)}
+            >
+              <FormRowValue
+                text={recurrence.frequency === 'NONE' ? null : recurrenceSummary}
+                placeholder="不重复"
+              />
+            </FormRow>
+
+            <FormRow
+              label="提醒"
+              onPress={() =>
+                onPickReminder({ minutes: normalizeReminders(draft.reminders), sound: reminderSound })
+              }
+            >
+              <FormRowValue
+                text={
+                  draft.reminders.length > 0
+                    ? `${describeReminders(draft.reminders)} · ${describeReminderSound(reminderSound)}`
+                    : null
+                }
+                placeholder="不提醒"
+              />
+            </FormRow>
+
+            <FormRow label="地点" onPress={onPickLocation}>
+              <FormRowValue text={draft.place?.name ?? null} placeholder="添加地点" />
+            </FormRow>
+            {/* 地图常常只定位到楼，教室/门牌由用户手填（与地点都可空，spec §5.9） */}
+            <FormRow label="详细地址" last>
+              <FormRowText
+                value={draft.locationDetail}
+                placeholder="3 号楼 305（选填）"
+                onChangeText={(locationDetail) => patch({ locationDetail })}
+              />
+            </FormRow>
+          </Card>
+        </View>
+
+        {draft.place?.address ? (
+          <Text style={{ color: theme.color.textTertiary, fontSize: 12, marginTop: 6, marginLeft: 4 }}>
+            {draft.place.address}
+          </Text>
+        ) : null}
+
+        <View style={{ marginTop: theme.spacing.md }}>
+          <Card>
+            <FormTextArea
+              value={draft.description}
+              placeholder="添加备注、议程…"
+              onChangeText={(description) => patch({ description })}
+            />
+          </Card>
+        </View>
+
+        {/*
+          这里原来还有第二张卡片：「链接 / 分类 / 出行 / 优先级 / 闲忙 / 状态」。
+          2026-09-27 整块从界面撤掉：这六项当时都没有消费方 ——
+          链接与分类没有任何读取方（分类筛选还没做），出行时间要等「出发提醒」（还没做）、
+          闲忙要等合并视图、状态要等参与者与邀请（阶段二）、日程优先级全仓无人读
+          （只有**待办**的优先级参与列表排序）。留着不仅占掉小半屏、把「删除日程」推得很远，
+          还会让用户以为「不填就不对」；其中「出行」那行更是因为后端不输出空字段
+          而显示成了 `undefined`，连带把保存也堵住（见 domain/eventDraft 的修复）。
+
+          **字段与接口都保留**：draft 里照旧带着它们（`draftFromEvent` 读、`buildUpdatePayload` 写），
+          所以编辑一条已有日程不会把这些值抹掉；将来做「出发提醒 / 分类筛选 / 合并视图」时，
+          接回界面即可，不需要动契约与两版后端。
+        */}
+
+        {draft.place ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="清除地点"
+            onPress={() => patch({ place: null })}
+          >
+            <Text style={{ color: theme.color.textTertiary, fontSize: 13, marginTop: theme.spacing.md }}>
+              清除地点
+            </Text>
+          </Pressable>
+        ) : null}
+
+        {error ? (
+          <Text style={{ color: theme.color.danger, fontSize: 13, marginTop: theme.spacing.md }}>{error}</Text>
+        ) : null}
+
+        {isEdit ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="删除日程"
+            onPress={remove}
+            disabled={saving}
+            style={[
+              styles.delete,
+              { borderColor: theme.color.border, borderRadius: theme.radius.button, marginTop: theme.spacing.lg },
+            ]}
+          >
+            <Text style={{ color: theme.color.danger, fontSize: 15 }}>删除日程</Text>
+          </Pressable>
+        ) : null}
+      </ScrollView>
+
+      {/* 时间选择层：贴在底部，不遮全屏，拨滚轮时还能看到上面的表单（spec §7.6.7） */}
+      {timePickerOpen ? (
+        <WheelLayer
+          title="时间"
+          onCancel={() => setTimePickerOpen(false)}
+          onConfirm={confirmTimePicker}
+        >
+          <WheelTimePicker value={timeDraft} onChange={setTimeDraft} />
+        </WheelLayer>
+      ) : null}
+
+      {/* 草稿模式才会用到：在编辑页里直接改这条草稿的日期 */}
+      {datePickerOpen ? (
+        <WheelLayer
+          title="日期"
+          onCancel={() => setDatePickerOpen(false)}
+          onConfirm={confirmDatePicker}
+        >
+          <WheelDatePicker value={dateDraft} onChange={setDateDraft} />
+        </WheelLayer>
+      ) : null}
+    </Screen>
+  );
+}
+
+const styles = StyleSheet.create({
+  delete: { borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center', paddingVertical: 14 },
+});

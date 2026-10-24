@@ -1,0 +1,382 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+
+import type { StoredSession } from '../shared/auth';
+import {
+  createOrgTokenProvider,
+  loadOrgAccounts,
+  saveOrgAccounts,
+  toStoredOrgAccount,
+  type StoredOrgAccount,
+} from '../shared/auth';
+import type { TokenResponse } from '../shared/api';
+import type { AppRuntime } from '../runtime';
+import { createApiClient, type ApiClient } from '../shared/api';
+import { createEndpoints, type Endpoints } from '../api/endpoints';
+import { createTheme, type AppTheme } from '../shared/theme';
+import {
+  createSecureThemeStore,
+  nextScheme,
+  type ThemePreferenceStore,
+} from '../shared/theme';
+import type { ColorScheme } from '@chronoflow/design-tokens';
+import {
+  createSecureNotificationPrefsStore,
+  DEFAULT_NOTIFICATION_PREFS,
+  type NotificationPrefsStore,
+} from '../shared/notifications';
+import {
+  DEFAULT_REMINDER_SOUND,
+  setCurrentReminderSound,
+  type ReminderSound,
+} from '../shared/notifications';
+
+interface AppContextValue {
+  theme: AppTheme;
+  scheme: ColorScheme;
+  runtime: AppRuntime | null;
+  session: StoredSession | null;
+  /** 已认领的组织账号（「登录记录」，spec §4.2.5） */
+  orgAccounts: StoredOrgAccount[];
+  /** 组织 tab 当前展示哪一个组织；null 表示还没进入任何组织视图 */
+  activeOrgIdentityId: number | null;
+  setActiveOrgIdentityId: (identityId: number | null) => void;
+  /** 从检索结果跳进组织视图时要定位的日期；消费后由组织页清空 */
+  orgFocusDateKey: string | null;
+  setOrgFocusDateKey: (dateKey: string | null) => void;
+  /** 从服务端刷新「我的组织账号」列表（保留本地令牌） */
+  refreshOrgAccounts: () => Promise<StoredOrgAccount[]>;
+  /** 认领组织账号：登录成功即绑定成功，并把令牌存进登录记录 */
+  claimOrgAccount: (org: string, memberKey: string) => Promise<StoredOrgAccount>;
+  /** 解绑：删本地登录记录 + 服务端解绑 */
+  unlinkOrgAccount: (identityId: number) => Promise<void>;
+  /** 某个组织账号的接口客户端（自动刷新它的令牌）；账号不在本地时返回 null */
+  orgApi: (identityId: number) => Endpoints | null;
+  /** 到点提醒的总开关（本机偏好，spec §4.5） */
+  notificationEnabled: boolean;
+  setNotificationEnabled: (enabled: boolean) => void;
+  /** 提醒声音档位（本机偏好，spec §4.5）：静音 / 系统提示音 / 闹钟式 */
+  reminderSound: ReminderSound;
+  /** 改声音档位：写本机偏好，并让调用方触发一次提醒重排（换渠道才会换声音） */
+  setReminderSound: (sound: ReminderSound) => void;
+  toggleScheme: () => void;
+  setRuntime: (runtime: AppRuntime | null) => void;
+  setSession: (session: StoredSession | null) => void;
+  applyTokenResponse: (response: TokenResponse) => Promise<StoredSession>;
+  signOut: () => Promise<void>;
+}
+
+const AppContext = createContext<AppContextValue | null>(null);
+
+export function AppProvider({
+  systemScheme,
+  children,
+}: {
+  systemScheme: ColorScheme;
+  children: ReactNode;
+}) {
+  const [override, setOverride] = useState<ColorScheme | null>(null);
+  const [runtime, setRuntime] = useState<AppRuntime | null>(null);
+  const [session, setSession] = useState<StoredSession | null>(null);
+  const [orgAccounts, setOrgAccounts] = useState<StoredOrgAccount[]>([]);
+  const [activeOrgIdentityId, setActiveOrgIdentityId] = useState<number | null>(null);
+  const [orgFocusDateKey, setOrgFocusDateKey] = useState<string | null>(null);
+  // 每个组织账号一个客户端：令牌各自独立，互不影响（不同组织的视图必须隔离）
+  const orgClients = useRef(new Map<number, { client: ApiClient; api: Endpoints }>());
+
+  const scheme = override ?? systemScheme;
+  const theme = useMemo(() => createTheme(scheme), [scheme]);
+  /**
+   * 到点提醒的总开关（spec §4.5）。
+   *
+   * 默认**关闭**（2026-10-01 产品决定）：通知是「用户主动要的打扰」，没问过就不发。
+   * 代价是「设了提醒却不响」，所以提醒页会写明总开关的状态并引导去打开。
+   * 存本机而不是服务端——它是「这台手机要不要响」，换设备时按默认值来。
+   */
+  const [notificationEnabled, setNotificationEnabledState] = useState(
+    DEFAULT_NOTIFICATION_PREFS.enabled,
+  );
+  /** 提醒声音档位。和总开关一起存本机（spec §4.5）；默认「系统提示音」。 */
+  const [reminderSound, setReminderSoundState] = useState<ReminderSound>(
+    DEFAULT_NOTIFICATION_PREFS.sound,
+  );
+  const notificationPrefsRef = useRef<NotificationPrefsStore | null>(null);
+  /** 存储里完整的那份偏好：改一个字段时要把另一个带上，不能互相覆盖 */
+  const notificationPrefsValueRef = useRef({ ...DEFAULT_NOTIFICATION_PREFS });
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const store = await createSecureNotificationPrefsStore();
+        notificationPrefsRef.current = store;
+        const stored = await store.read();
+        if (active) {
+          notificationPrefsValueRef.current = stored;
+          setNotificationEnabledState(stored.enabled);
+          setReminderSoundState(stored.sound);
+          // 通知网关按这个模块级值挑渠道：启动时先同步一次，否则「上次选了闹钟式」
+          // 在重启后的第一条提醒上会退回默认音
+          setCurrentReminderSound(stored.sound);
+        }
+      } catch {
+        // 存储不可用（Web 预览）：保持默认（关闭），不影响其他功能
+        setCurrentReminderSound(DEFAULT_REMINDER_SOUND);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // 深色模式偏好要持久化：只存 React state 的话，App 一重启就回到系统配色（spec §7.6.6）
+  const themeStoreRef = useRef<ThemePreferenceStore | null>(null);
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const store = await createSecureThemeStore();
+        themeStoreRef.current = store;
+        const stored = await store.read();
+        if (active && stored) {
+          setOverride(stored);
+        }
+      } catch {
+        // 安全存储不可用（例如 Web 预览）：降级为「本次会话跟随系统」，不影响其他功能
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const toggleScheme = useCallback(() => {
+    const next = nextScheme(override, systemScheme);
+    setOverride(next);
+    void themeStoreRef.current?.write(next);
+  }, [override, systemScheme]);
+
+  /** 开关到点提醒：存本机，并立刻反映到界面（本机排期的撤销由调用方触发重排） */
+  const setNotificationEnabled = useCallback((enabled: boolean) => {
+    setNotificationEnabledState(enabled);
+    notificationPrefsValueRef.current = { ...notificationPrefsValueRef.current, enabled };
+    void notificationPrefsRef.current?.write(notificationPrefsValueRef.current);
+  }, []);
+
+  /** 改提醒声音：写本机偏好 + 同步给通知网关；重排由调用方触发（换渠道才换得了声音） */
+  const setReminderSound = useCallback((sound: ReminderSound) => {
+    setReminderSoundState(sound);
+    setCurrentReminderSound(sound);
+    notificationPrefsValueRef.current = { ...notificationPrefsValueRef.current, sound };
+    void notificationPrefsRef.current?.write(notificationPrefsValueRef.current);
+  }, []);
+
+  const persist = useCallback(async (next: StoredOrgAccount[]) => {
+    setOrgAccounts(next);
+    await saveOrgAccounts(next);
+  }, []);
+
+  /** 某个组织账号的客户端：令牌按需刷新，刷完写回登录记录。 */
+  const clientFor = useCallback(
+    (account: StoredOrgAccount): Endpoints => {
+      if (!runtime) {
+        throw new Error('运行时尚未初始化');
+      }
+      const cached = orgClients.current.get(account.identityId);
+      if (cached) {
+        return cached.api;
+      }
+      const client = createApiClient({
+        baseUrl: runtime.baseUrl,
+        session: createOrgTokenProvider({
+          account,
+          deviceId: runtime.deviceId,
+          // 刷新走**裸客户端**：再带过期令牌会绕成递归
+          bareClient: createApiClient({ baseUrl: runtime.baseUrl }),
+          onRefreshed: (next) => {
+            setOrgAccounts((current) => {
+              const merged = current.map((item) =>
+                item.identityId === next.identityId ? next : item,
+              );
+              void saveOrgAccounts(merged);
+              return merged;
+            });
+          },
+        }),
+      });
+      const api = createEndpoints(client);
+      orgClients.current.set(account.identityId, { client, api });
+      return api;
+    },
+    [runtime],
+  );
+
+  const refreshOrgAccounts = useCallback(async () => {
+    if (!runtime) {
+      return [];
+    }
+    // 服务端列表是权威（组织名/部门/角色可能变了），本地只提供令牌
+    const remote = await runtime.api.orgAccounts();
+    const local = await loadOrgAccounts();
+    const tokensById = new Map(local.map((item) => [item.identityId, item]));
+    const merged: StoredOrgAccount[] = remote.map((item) => {
+      const tokens = tokensById.get(item.identityId);
+      return {
+        ...item,
+        // 服务端不返回令牌（它不知道本地会话）；本地没有就留空，进入时会重新认领
+        accessToken: tokens?.accessToken ?? '',
+        refreshToken: tokens?.refreshToken ?? '',
+        expiresAt: tokens?.expiresAt ?? 0,
+      };
+    });
+    await persist(merged);
+    return merged;
+  }, [runtime, persist]);
+
+  const claimOrgAccount = useCallback(
+    async (org: string, memberKey: string) => {
+      if (!runtime) {
+        throw new Error('运行时尚未初始化');
+      }
+      const result = await runtime.api.claimOrgAccount(org, memberKey, runtime.deviceId);
+      const stored = toStoredOrgAccount(result);
+      const next = [...orgAccounts.filter((item) => item.identityId !== stored.identityId), stored];
+      await persist(next);
+      return stored;
+    },
+    [runtime, orgAccounts, persist],
+  );
+
+  const unlinkOrgAccount = useCallback(
+    async (identityId: number) => {
+      if (!runtime) {
+        return;
+      }
+      await runtime.api.unlinkOrgAccount(identityId);
+      orgClients.current.delete(identityId);
+      await persist(orgAccounts.filter((item) => item.identityId !== identityId));
+      if (activeOrgIdentityId === identityId) {
+        setActiveOrgIdentityId(null);
+      }
+    },
+    [runtime, orgAccounts, persist, activeOrgIdentityId],
+  );
+
+  const orgApi = useCallback(
+    (identityId: number): Endpoints | null => {
+      const account = orgAccounts.find((item) => item.identityId === identityId);
+      if (!account || !account.refreshToken) {
+        // 本地没有令牌（换机、或记录被清过）：交给上层重新认领一次
+        return null;
+      }
+      return clientFor(account);
+    },
+    [orgAccounts, clientFor],
+  );
+
+  const value = useMemo<AppContextValue>(
+    () => ({
+      theme,
+      scheme,
+      runtime,
+      session,
+      orgAccounts,
+      activeOrgIdentityId,
+      setActiveOrgIdentityId,
+      orgFocusDateKey,
+      setOrgFocusDateKey,
+      refreshOrgAccounts,
+      claimOrgAccount,
+      unlinkOrgAccount,
+      orgApi,
+      notificationEnabled,
+      setNotificationEnabled,
+      reminderSound,
+      setReminderSound,
+      toggleScheme,
+      setRuntime,
+      setSession,
+      /**
+       * 登录 / 选定身份 / 切换身份都必须走这里。
+       *
+       * 不能直接用 setSession：那只是 React 状态，不会写入安全存储，
+       * 结果就是 App 一重启就要求重新登录——与「用户不感知重新登录」直接冲突。
+       */
+      applyTokenResponse: async (response: TokenResponse) => {
+        if (!runtime) {
+          throw new Error('运行时尚未初始化');
+        }
+        const stored = await runtime.session.setFromTokenResponse(response);
+        setSession(stored);
+        return stored;
+      },
+      signOut: async () => {
+        await runtime?.session.clear();
+        // 退出登录要连带清掉组织账号的登录记录：令牌还在本地就等于没退干净
+        orgClients.current.clear();
+        await persist([]);
+        setActiveOrgIdentityId(null);
+        setSession(null);
+      },
+    }),
+    [theme, scheme, runtime, session, orgAccounts, activeOrgIdentityId, orgFocusDateKey,
+     refreshOrgAccounts, claimOrgAccount, unlinkOrgAccount, orgApi, notificationEnabled,
+     setNotificationEnabled, reminderSound, setReminderSound, persist, toggleScheme],
+  );
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+}
+
+function useAppContext(): AppContextValue {
+  const value = useContext(AppContext);
+  if (!value) {
+    throw new Error('useAppContext 必须在 AppProvider 内使用');
+  }
+  return value;
+}
+
+export function useAppTheme(): AppTheme {
+  return useAppContext().theme;
+}
+
+export function useAppScheme(): ColorScheme {
+  return useAppContext().scheme;
+}
+
+export function useAppSessionState() {
+  const {
+    session, setSession, toggleScheme, applyTokenResponse, signOut,
+    orgAccounts, activeOrgIdentityId, setActiveOrgIdentityId, orgFocusDateKey, setOrgFocusDateKey,
+    refreshOrgAccounts, claimOrgAccount, unlinkOrgAccount, orgApi,
+    notificationEnabled, setNotificationEnabled,
+    reminderSound, setReminderSound,
+  } = useAppContext();
+  return {
+    session, setSession, toggleScheme, applyTokenResponse, signOut,
+    orgAccounts, activeOrgIdentityId, setActiveOrgIdentityId, orgFocusDateKey, setOrgFocusDateKey,
+    refreshOrgAccounts, claimOrgAccount, unlinkOrgAccount, orgApi,
+    notificationEnabled, setNotificationEnabled,
+    reminderSound, setReminderSound,
+  };
+}
+
+/** 已登录后才可使用；未就绪时抛错以便尽早暴露装配问题。 */
+export function useRuntime(): AppRuntime {
+  const { runtime } = useAppContext();
+  if (!runtime) {
+    throw new Error('运行时尚未初始化');
+  }
+  return runtime;
+}
+
+export function useRuntimeState() {
+  const { runtime, setRuntime } = useAppContext();
+  return { runtime, setRuntime };
+}

@@ -1,0 +1,85 @@
+{
+  "expo": {
+    "name": "时纪流",
+    "slug": "chronoflow",
+    "version": "1.1.0",
+    "icon": "./assets/icon.png",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.chronoflow.frontend",
+      "buildNumber": "1",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "用于在地图选点中定位到你的当前位置"
+      }
+    },
+    "android": {
+      "package": "com.chronoflow.frontend",
+      "versionCode": 15,
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "REQUEST_INSTALL_PACKAGES"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#21221D"
+      }
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "用于在地图选点中定位到你的当前位置"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "用于选择头像、为待办或意见反馈添加图片",
+          "cameraPermission": "用于拍一张日程通知/行程单，在手机本地识别成日程草稿"
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "用于在「小安」里长按说话并把您说的话转成文字",
+          "recordAudioAndroid": true,
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
+        "./plugins/withJpush",
+        {
+          "appKey": "e45cb28aabd482c0dcc6ab42",
+          "channel": "default_developer"
+        }
+      ],
+      "./plugins/withCleartextHttp",
+      "./plugins/withOnnxRuntime",
+      "./plugins/withSystemLocation",
+      "./plugins/withReleaseSigning",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "imageWidth": 220,
+          "resizeMode": "contain",
+          "backgroundColor": "#FFFFFF",
+          "dark": {
+            "image": "./assets/splash-dark.png",
+            "backgroundColor": "#21221D"
+          }
+        }
+      ],
+      "onnxruntime-react-native"
+    ],
+    "extra": {
+      "apiBaseUrl": "https://chronocloud.top"
+    }
+  }
+}

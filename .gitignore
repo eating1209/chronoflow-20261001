@@ -1,0 +1,68 @@
+# Node / 前端
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.expo/
+.expo-shared/
+web-build/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Java / Maven（阶段一后端）
+target/
+*.class
+*.jar
+!**/maven-wrapper.jar
+
+# Python（阶段二后端）
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+keys/
+
+# 日志与本地运行数据
+logs/
+*.log
+
+# Expo/RN 的原生工程：由 `npx expo prebuild` 生成（CNG），不进版本库——
+# 源配置在 app/app.json 与 app/plugins/，提交生成物只会让两边打架
+app/android/
+app/ios/
+# 图片上传目录（spec §5.10）：本地运行产物，不进版本库。
+# 用 **/ 前缀：后端从各自的模块目录启动（CWD 不同），路径会落在不同层级
+**/data/uploads/
+
+# 端侧 OCR 的 PaddleOCR 模型（约 16MB 二进制）：不进版本库，
+# 用 `scripts/fetch_ppocr_models.sh` 拉取（来源、体积、校验都在脚本里）
+app/assets/models/ppocr/
+
+# 构建缓存与临时产物
+tmp/
+.cache/
+
+# IDE / 编辑器 / 操作系统
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Windows 复制过来的 NTFS 备用数据流残留（WSL 里会显示成 *:Zone.Identifier）
+*Zone.Identifier

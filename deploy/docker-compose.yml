@@ -1,0 +1,146 @@
+# 时纪流生产/演示部署编排（spec §9.1 的落地版）。
+#
+# 与开发环境的差别：数据库与 Redis 都跑在容器里，后端与前端各自一个镜像，
+# 对外只开一个端口（默认 8088）——公网入口是前端 nginx，后端只在容器网络内可达。
+#
+# 用法（在部署机的 /opt/chronoflow 下）：
+#   cp .env.example .env && vi .env      # 填密码与短信/高德凭据
+#   docker-compose up -d --build
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: chronoflow-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chronoflow
+      POSTGRES_USER: chronoflow
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD 必须设置}
+      TZ: Asia/Shanghai
+    volumes:
+      - chronoflow_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chronoflow -d chronoflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    container_name: chronoflow-redis
+    restart: unless-stopped
+    # 验证码与刷新令牌丢了就是全员重新登录，因此这里只做内存缓存，不开持久化
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: chronoflow-backend:latest
+    container_name: chronoflow-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 必须显式选 prod：application.yml 的默认 profile 是 dev，而 dev 会打开
+      # SMS 回显与 DEBUG 日志（MyBatis 会把 SQL 参数——手机号/日程标题——打进日志）。
+      # prod profile 下还有一道启动自检：JWT_SECRET / 超管密码仍是默认值就直接不启动。
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/chronoflow
+      SPRING_DATASOURCE_USERNAME: chronoflow
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 必须设置}
+      ADMIN_BOOTSTRAP_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD 必须设置}
+      CHRONOFLOW_UPLOAD_DIR: /data/uploads
+      # 真实短信通道（spec §3.6）：接了 aliyun 之后接口不会再回显验证码
+      SMS_PROVIDER: ${SMS_PROVIDER:-log}
+      ALIYUN_SMS_ACCESS_KEY_ID: ${ALIYUN_SMS_ACCESS_KEY_ID:-}
+      ALIYUN_SMS_ACCESS_KEY_SECRET: ${ALIYUN_SMS_ACCESS_KEY_SECRET:-}
+      ALIYUN_SMS_SIGN_NAME: ${ALIYUN_SMS_SIGN_NAME:-}
+      ALIYUN_SMS_TEMPLATE_CODE: ${ALIYUN_SMS_TEMPLATE_CODE:-}
+      # 应用市场审核专用（默认空 = 关闭）；审核通过后删除 .env 里这两行并重启
+      CHRONOFLOW_REVIEW_LOGIN_PHONE: ${CHRONOFLOW_REVIEW_LOGIN_PHONE:-}
+      CHRONOFLOW_REVIEW_LOGIN_CODE: ${CHRONOFLOW_REVIEW_LOGIN_CODE:-}
+      # 地点与地图（spec §5.9）：Web 服务 Key 给后端搜地点，JS Key 给 WebView 画地图
+      GEO_AMAP_KEY: ${GEO_AMAP_KEY:-}
+      GEO_AMAP_JS_KEY: ${GEO_AMAP_JS_KEY:-}
+      GEO_AMAP_JS_SECURITY_CODE: ${GEO_AMAP_JS_SECURITY_CODE:-}
+      # 推送（spec §4.5）：app-key 是公开的（会编进 APK），master-secret 只在服务端用。
+      # 两者为空时 PushProvider 降级成「未配置」并如实上报，其余功能不受影响。
+      JPUSH_APPKEY: ${JPUSH_APPKEY:-}
+      JPUSH_MASTER_SECRET: ${JPUSH_MASTER_SECRET:-}
+      # iOS 联调期置 false（走 APNs 沙箱）才能收到
+      JPUSH_APNS_PRODUCTION: ${JPUSH_APNS_PRODUCTION:-true}
+      # 节假日每天自动同步（spec §5.11）；拉不到只告警，界面用库里已有数据
+      HOLIDAY_SYNC_BASE_URL: ${HOLIDAY_SYNC_BASE_URL:-https://raw.githubusercontent.com/NateScarlet/holiday-cn/master}
+      # 智能助手「小安」（spec §11）：模型地址与 Key。**只列变量名**，
+      # 真 Key 放在 /opt/chronoflow/.env（gitignore），仓库里搜不到明文。
+      # api-key 为空 = 未接入：接口返回 90002，App 显示「还没有接入模型」。
+      CHRONOFLOW_AGENT_BASE_URL: ${CHRONOFLOW_AGENT_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      CHRONOFLOW_AGENT_API_KEY: ${CHRONOFLOW_AGENT_API_KEY:-}
+      CHRONOFLOW_AGENT_MODEL: ${CHRONOFLOW_AGENT_MODEL:-qwen3.6-flash}
+      CHRONOFLOW_AGENT_ENABLE_THINKING: ${CHRONOFLOW_AGENT_ENABLE_THINKING:-false}
+      CHRONOFLOW_AGENT_MAX_TOKENS: ${CHRONOFLOW_AGENT_MAX_TOKENS:-600}
+      # 语音转文字（长按说话）：走百炼的多模态生成接口，与对话不是同一个地址
+      CHRONOFLOW_ASR_URL: ${CHRONOFLOW_ASR_URL:-https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation}
+      CHRONOFLOW_ASR_API_KEY: ${CHRONOFLOW_ASR_API_KEY:-}
+      CHRONOFLOW_ASR_MODEL: ${CHRONOFLOW_ASR_MODEL:-qwen3-asr-flash}
+      # 图片识别日程（spec §4.1.9）的**服务端**多模态识别（`POST /ai/events/recognize`）。
+      # ⚠️ 这条路会把**图片本身**发到模型服务，与「图片不出手机」的产品承诺相反：
+      #    App 目前走的是「端侧 OCR → /ai/events/parse-text」，并不会调这个端点。
+      #    这里把它指向百炼的 qwen-vl 只是**用于试验/比对识别效果**；
+      #    要作为面向用户的路径，必须先改隐私政策与合规文案（docs/legal）。
+      CHRONOFLOW_VISION_BASE_URL: ${CHRONOFLOW_VISION_BASE_URL:-}
+      CHRONOFLOW_VISION_MODEL: ${CHRONOFLOW_VISION_MODEL:-}
+      CHRONOFLOW_VISION_API_KEY: ${CHRONOFLOW_VISION_API_KEY:-}
+      CHRONOFLOW_VISION_TIMEOUT_SECONDS: ${CHRONOFLOW_VISION_TIMEOUT_SECONDS:-60}
+      # 关思考流（DashScope 的 enable_thinking）。留空 = 不发（本地推理服务不认这个参数）
+      CHRONOFLOW_VISION_ENABLE_THINKING: ${CHRONOFLOW_VISION_ENABLE_THINKING:-}
+      # 应用内更新（spec §4.1.11）：App 通过 /system/app-release 查最新版本。
+      # 留空 = 这个部署不提供更新检查（App 不弹任何东西）；发布新版本时改这几项
+      # （changelog 用 `|` 分隔多条）。安装包由 nginx 的 /downloads/ 直接发。
+      CHRONOFLOW_APP_RELEASE_VERSION_NAME: ${CHRONOFLOW_APP_RELEASE_VERSION_NAME:-}
+      CHRONOFLOW_APP_RELEASE_VERSION_CODE: ${CHRONOFLOW_APP_RELEASE_VERSION_CODE:-0}
+      CHRONOFLOW_APP_RELEASE_APK_URL: ${CHRONOFLOW_APP_RELEASE_APK_URL:-}
+      CHRONOFLOW_APP_RELEASE_SIZE_BYTES: ${CHRONOFLOW_APP_RELEASE_SIZE_BYTES:-0}
+      CHRONOFLOW_APP_RELEASE_SHA256: ${CHRONOFLOW_APP_RELEASE_SHA256:-}
+      CHRONOFLOW_APP_RELEASE_CHANGELOG: ${CHRONOFLOW_APP_RELEASE_CHANGELOG:-}
+      CHRONOFLOW_APP_RELEASE_FORCE: ${CHRONOFLOW_APP_RELEASE_FORCE:-false}
+      CHRONOFLOW_APP_RELEASE_MIN_SUPPORTED_VERSION_CODE: ${CHRONOFLOW_APP_RELEASE_MIN_SUPPORTED_VERSION_CODE:-0}
+      CHRONOFLOW_APP_RELEASE_PUBLISHED_AT: ${CHRONOFLOW_APP_RELEASE_PUBLISHED_AT:-}
+      TZ: Asia/Shanghai
+    volumes:
+      - chronoflow_uploads:/data/uploads
+    ports:
+      # 只绑本机：运维/种子脚本用得上，公网走 web 那一个入口
+      - "127.0.0.1:${BACKEND_HOST_PORT:-18080}:8080"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: chronoflow-web:latest
+    container_name: chronoflow-web
+    restart: unless-stopped
+    depends_on:
+      - backend
+    volumes:
+      # 应用内更新的安装包（spec §4.1.11）：挂在静态目录下，换包不用重建镜像。
+      # 宿主目录 = ./web/downloads（发布用 scripts/publish_apk.sh 往这里传）。
+      - ./web/downloads:/usr/share/nginx/html/downloads:ro
+    ports:
+      - "${WEB_HOST_PORT:-8088}:80"
+
+volumes:
+  chronoflow_pgdata:
+  chronoflow_uploads:

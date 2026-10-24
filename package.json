@@ -1,0 +1,24 @@
+{
+  "name": "chronoflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "时纪流（ChronoFlow）—— 智能日程与待办",
+  "workspaces": [
+    "packages/*",
+    "web-admin",
+    "app"
+  ],
+  "scripts": {
+    "postinstall": "npm run build -w @chronoflow/design-tokens",
+    "build": "npm run build -w @chronoflow/design-tokens && npm run build -w @chronoflow/web-admin",
+    "test": "npm run test -w @chronoflow/design-tokens && npm run test -w @chronoflow/web-admin && npm run test -w @chronoflow/app",
+    "typecheck": "npm run typecheck -w @chronoflow/app",
+    "dev:web": "npm run dev -w @chronoflow/web-admin",
+    "dev:app": "npm run start -w @chronoflow/app",
+    "check:boundaries": "depcruise app/src web-admin/src --config .dependency-cruiser.js --output-type err",
+    "deps:graph": "depcruise app/src --config .dependency-cruiser.js --output-type dot > deps.dot && echo \"已生成 deps.dot（可用 graphviz 转图片）\""
+  },
+  "devDependencies": {
+    "dependency-cruiser": "^18.7.0"
+  }
+}

@@ -1,0 +1,117 @@
+import { Alert, Linking } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
+
+import {
+  ensurePermission,
+  permissionRationale,
+  type PermissionKind,
+  type PermissionGateway,
+} from '../domain/permissions';
+import { localNotificationsAvailable } from '../notifications/availability';
+
+/**
+ * 权限申请的 RN 适配层：把 domain/permissions.ts 的纯逻辑接到真实的系统弹窗上。
+ *
+ * 所有申请相机 / 相册 / 定位的地方都必须走这里，**不要再直接调
+ * `ImagePicker.requestCameraPermissionsAsync()`**——那样就绕过了「先说明用途」这一步，
+ * 而审核规范把「未及时明确告知索取权限的目的和用途」列为常见违规。
+ */
+export async function askPermission(
+  kind: PermissionKind,
+  options: { quiet?: boolean } = {},
+): Promise<boolean> {
+  const rationale = permissionRationale(kind);
+
+  const explain = () =>
+    new Promise<boolean>((resolve) => {
+      Alert.alert(rationale.title, rationale.message, [
+        { text: '不允许', style: 'cancel', onPress: () => resolve(false) },
+        { text: '继续', onPress: () => resolve(true) },
+      ]);
+    });
+
+  const reject = () => {
+    // 拒绝后只提示，绝不退出 App，也不再反复弹窗（规范 §四「不给权限 APP 弹窗循环」）
+    Alert.alert('未开启权限', rationale.deniedHint, [
+      { text: '知道了', style: 'cancel' },
+      // 已经被系统记住「不再询问」时，唯一的补救路径是去系统设置，主动给一个入口
+      { text: '去设置', onPress: () => void Linking.openSettings() },
+    ]);
+  };
+
+  const gateway = gatewayFor(kind, explain, reject);
+  if (options.quiet && !(await gateway.current())) {
+    // 「静默尝试」场景（比如刚进地点选择页时顺手定位一下）：
+    // 没授权就直接放弃，不弹任何窗——进来就弹一个权限说明正是「频繁弹窗」的典型形态
+    return false;
+  }
+  return ensurePermission(gateway);
+}
+
+function gatewayFor(
+  kind: PermissionKind,
+  explain: () => Promise<boolean>,
+  reject: () => void,
+): PermissionGateway {
+  if (kind === 'location') {
+    return {
+      current: async () => (await Location.getForegroundPermissionsAsync()).granted,
+      request: async () => (await Location.requestForegroundPermissionsAsync()).granted,
+      explain,
+      reject,
+    };
+  }
+  if (kind === 'notification') {
+    /**
+     * 通知走动态 import：原生通知模块在「Web 预览 / 缺原生模块的构建」里不存在，
+     * 顶层 import 会让整个 App 起不来（与 notifications/expoGateway.ts 同一套写法）。
+     */
+    if (!localNotificationsAvailable()) {
+      // Expo Go（Android）：import 就会抛，这里直接当作「没有权限」，由调用方提示
+      return {
+        current: async () => false,
+        request: async () => false,
+        explain,
+        reject,
+      };
+    }
+    const api = () => import('expo-notifications');
+    return {
+      current: async () => (await (await api()).getPermissionsAsync()).granted,
+      request: async () => (await (await api()).requestPermissionsAsync()).granted,
+      explain,
+      reject,
+    };
+  }
+  if (kind === 'microphone') {
+    /**
+     * 录音走 expo-audio（与申请权限同一个模块）。
+     *
+     * <p>动态 import：原生模块缺失的构建（Web 预览 / 缺模块的真机包）里顶层 import
+     * 会让整个 App 起不来，而这只是「语音输入」一个功能，不该有这种代价。
+     */
+    const api = () => import('expo-audio');
+    return {
+      current: async () => (await (await api()).getRecordingPermissionsAsync()).granted,
+      request: async () => (await (await api()).requestRecordingPermissionsAsync()).granted,
+      explain,
+      reject,
+    };
+  }
+  if (kind === 'camera') {
+    // 相机的申请入口在 expo-image-picker 里（与相册同一个模块），别再去引第二个库
+    return {
+      current: async () => (await ImagePicker.getCameraPermissionsAsync()).granted,
+      request: async () => (await ImagePicker.requestCameraPermissionsAsync()).granted,
+      explain,
+      reject,
+    };
+  }
+  return {
+    current: async () => (await ImagePicker.getMediaLibraryPermissionsAsync()).granted,
+    request: async () => (await ImagePicker.requestMediaLibraryPermissionsAsync()).granted,
+    explain,
+    reject,
+  };
+}

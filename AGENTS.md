@@ -2,9 +2,24 @@
 
 # AGENTS.md —— 时纪流（ChronoFlow）会话交接文档
 
+## 2026-10-28 本轮交接（最新）
+
+- 用户是**陶伊婷**（成员 6、法定代表人、项目技术负责人）。本轮做成员 6 的任务 2（弹窗提醒）和任务 5（服务端数据保留）。
+- 提醒动作已完成：日程通知有「稍后 10 分钟」，待办通知有「稍后 10 分钟 / 完成」；点「完成」会调用服务端完成待办，再清理普通提醒和稍后提醒。入口在 `app/src/App.tsx`、`app/src/modules/notifications/reminderActions.ts`、`scheduler.ts`、`listener.ts`。
+- 训练数据保留已完成：默认关闭的单独同意开关、只采样脱敏后的 OCR 文字、手机号/身份证号/姓名不可逆替换、90 天到期清理、关闭开关和注销账号立即删除。迁移见 `V23__training_data_retention.sql`，Java/Python 两版接口与 App 开关均已接通。
+- 隐私政策升到 **v1.2（2026-10-26）**，App 内入口是「我的 → 隐私与合规 → 帮助改进识别（可选）」。
+- 分工、备案和出包文档已更新：`docs/01-产品/六人分工-2026-10-24.md`、`docs/02-合规/备案与变更-陶伊婷专用清单.md`、`docs/03-上架/Android出包与验收-成员6清单.md`。当前版本统一为 `1.1.0 / versionCode 19`。
+- 分支规则已初始化：`develop`（开发）→ `test`（测试）→ `pre-release`（预发布）→ `main`（正式上架）；功能一律从 `develop` 拉 `feature/*`，详细规则见 `docs/05-技术/Git分支与发布流程.md`。原始版本用 tag `original-import` 和 `baseline-2026-10-25` 保留。
+- **功能代码改动还没有 commit / push**；分支规则、CI 和协作文档已单独提交到 `develop`。下次先跑 `git status`，确认工作区后再由用户在 WSL 提交。
+- 已验证：App 42 个测试文件、286 个测试通过；App typecheck、依赖边界、20 项合规门禁、Java `test-compile`、Python `compileall`、`git diff --check` 通过。
+- 受环境限制未跑：Java 定向测试缺 `surefire-junit-platform:3.5.6` 且无网络；Python 测试缺 `fastapi`、`SQLAlchemy`、`pytest`。正式 APK 未出，因为四个签名环境变量未设置（keystore 在 `~/keys/chronoflow-release.jks`）。
+- Android BigPicture 大图通知**尚未实现**：当前是展开文本 + 动作按钮；`expo-notifications` 本地通知没有大图字段，严格验收需要补原生 Android 模块，已在成员 6 出包清单中如实标注。
+- 下次继续：部署 Flyway V23 并重新打 Java jar；设置签名变量后执行 `bash scripts/build_apk.sh --prebuild --release --archs=arm64-v8a` 和 `bash scripts/check_apk.sh`；真机测锁屏/亮屏/后台/划掉 App/稍后/完成。
+- 备案结论：应用宝已上架**不代表**备案不用改；先做工信部 App/ICP 备案变更（负责人陈诗音 → 陶伊婷），再在 `https://beian.mps.gov.cn` 新办公安联网备案。日常填表跟进交给成员 3 黄心，成员 4 汪靖配合素材，陶伊婷只做法人实名、刷脸、签字和必要电话核验。
+
 > 给下一个接手这个仓库的 agent。**开工前先读完这一份**，尤其是「§3 交接清单」和「§5 环境陷阱」两节。
 >
-> **2026-10-19（最新）**：为尽快上架，**AI 对话「小安」已整体下线**——入口、代码、麦克风权限、
+> **2026-10-19**：为尽快上架，**AI 对话「小安」已整体下线**——入口、代码、麦克风权限、
 > 隐私政策与两份清单里的相关声明全部移除，版本先到 1.1.0 / versionCode 17，随后因新增密码登录升到 **versionCode 18**。
 > 全部 AI 代码与下线前的合规文本留档在 `archive/ai-v1.1/`，恢复步骤见其中的 `RESTORE.md`。
 > 原因：应用宝把「AI 机器人对话」列为特殊行业，需算法备案 + 公安安全评估（1–3 个月）。

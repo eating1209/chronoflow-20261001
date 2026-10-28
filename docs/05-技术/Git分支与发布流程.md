@@ -10,7 +10,7 @@
 | `main` | 正式上架 | 技术负责人 | 受保护；只接受 `pre-release` 的 PR；每次上架打版本 tag |
 | `pre-release` | 预发布 / 验收 | 技术负责人 | 受保护；只接受 `test` 的 PR；验收通过才能进 `main` |
 | `test` | 测试 / 联调 | 测试负责人 | 只接受 `develop` 的 PR；在这里跑回归和真机测试 |
-| `develop` | 日常开发主链 | 模块负责人 | 默认分支；所有 `feature/*` PR 合到这里 |
+| `develop` | 日常开发主链 | 模块负责人 | 默认分支；受保护；所有 `feature/*` PR 合到这里 |
 | `feature/*` | 每人、每个任务的支链 | 开发者本人 | 从 `develop` 拉，完成后 PR 回 `develop` |
 | `hotfix/*` | 线上紧急修复 | 技术负责人 | 从 `main` 拉，修完同时合回 `main` 和 `develop` |
 
@@ -121,7 +121,7 @@ git switch -c hotfix/<问题>
 进入仓库 **Settings → Branches / Rules**：
 
 1. 把默认分支改成 `develop`。
-2. 对 `main`、`pre-release`、`test` 开启保护：
+2. 对 `main`、`pre-release`、`test`、`develop` 开启保护：
    - 禁止直接 push；
    - 合并必须走 Pull Request；
    - 至少 1 人 approve；
@@ -133,7 +133,7 @@ GitHub 用户名收齐后，再补 `.github/CODEOWNERS`，让每个模块自动�
 
 ## 七、几条硬规则
 
-- 不直接改 `main`、`pre-release`、`test`。
+- 不直接改 `main`、`pre-release`、`test`、`develop`。
 - 一个 PR 只做一件事；跨模块需求拆成多个 PR。
 - 分支名用英文小写和短横线，不用中文和空格。
 - 不要提交 `.env`、keystore、口令、生产地址和用户数据。

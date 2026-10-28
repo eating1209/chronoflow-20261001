@@ -6,7 +6,7 @@
 
 - 仓库使用 **Private**，不要公开敏感配置、审核账号、服务器信息和用户数据。
 - 长期分支：`develop`（开发）→ `test`（测试）→ `pre-release`（预发布）→ `main`（正式上架）。
-- **每个人从 `develop` 拉 `feature/*`**，不要从 `main` 拉功能分支；`main`、`test`、`pre-release` 都受保护，不能直接提交。
+- **每个人从 `develop` 拉 `feature/*`**，不要从 `main` 拉功能分支；`main`、`test`、`pre-release`、`develop` 都受保护，不能直接提交。
 - 分支命名：`feature/<姓名>-<模块>-<做什么>`；修 bug 用 `fix/<模块>-<问题>`，紧急线上问题用 `hotfix/<问题>`，文档用 `docs/<主题>`。
 - 一个 PR 只做一件事；跨模块需求拆成多个 PR，先改契约和后端，再改 App / Web。
 - 完整流程、GitHub 保护设置和第一次推送命令见 `docs/05-技术/Git分支与发布流程.md`。

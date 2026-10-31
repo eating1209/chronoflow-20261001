@@ -92,6 +92,21 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
 
   const check = useCallback(
     async (manual = false) => {
+      /**
+       * 应用内更新只服务 Android。
+       *
+       * 服务端 `/api/v1/system/app-release` 下发的是安卓 APK（`apkUrl` 指向
+       * `/downloads/chronoflow-*.apk`），iOS 的升级通道是 App Store。以前这里没有平台
+       * 守卫：iPhone 上照样请求、照样把「发现新版本 1.1.0 · 约 86 MB」弹出来，点「立即更新」
+       * 才在 `startUpdate` 里被挡住。既吓到用户，也踩审核 2.5.1 / 3.2.2（App 不得自行
+       * 下载安装包，露出这种弹窗属于误导）。
+       */
+      if (Platform.OS !== 'android') {
+        if (manual) {
+          Alert.alert('已是最新版本', `${currentVersionName}（iOS 版本通过 App Store 更新）`);
+        }
+        return;
+      }
       if (checking.current) {
         return;
       }
@@ -192,7 +207,8 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
     <AppUpdateContext.Provider value={value}>
       {children}
 
-      {pending ? (
+      {/* 兜底：检查逻辑已经挡在 iOS 之外，渲染层再挡一次，防止以后有人改回去 */}
+      {Platform.OS === 'android' && pending ? (
         <View style={styles.overlay}>
           <Card style={styles.card}>
             <Text style={[styles.title, { color: theme.color.textPrimary }]}>

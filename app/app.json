@@ -12,7 +12,8 @@
       "buildNumber": "1",
       "supportsTablet": false,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "用于在地图选点中定位到你的当前位置"
+        "NSLocationWhenInUseUsageDescription": "用于在地图选点中定位到你的当前位置",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -62,6 +63,7 @@
       "./plugins/withOnnxRuntime",
       "./plugins/withSystemLocation",
       "./plugins/withReleaseSigning",
+      "./plugins/with-ios-scene-delegate",
       [
         "expo-splash-screen",
         {

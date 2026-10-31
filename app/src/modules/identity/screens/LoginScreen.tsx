@@ -1,6 +1,17 @@
 import { useEffect, useState } from 'react';
 import { userFacingError } from '../../../shared/errors';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  InputAccessoryView,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 import { ApiError } from '../../../shared/api';
 import type { TokenResponse } from '../../../shared/api';
@@ -18,6 +29,15 @@ import {
   nextCooldown,
   sendCodeLabel,
 } from '../domain/smsCooldown';
+
+/**
+ * iOS 的 `phone-pad` / `number-pad` 键盘**没有回车键**，点输入框外的空白也不会收起。
+ *
+ * 登录页原本是不可滚动的居中布局：键盘一弹就把协议勾选框和登录按钮盖在下面，
+ * 用户既收不起键盘、又勾不到协议、两个按钮还都是灰的——直接卡死。
+ * 这里给两个输入框挂一个带「完成」的 accessory，让键盘永远有明确的收起入口。
+ */
+const KEYBOARD_ACCESSORY_ID = 'chronoflow-login-keyboard-done';
 
 /**
  * 登录页：**只登录个人账号**（spec §3.2）。
@@ -161,8 +181,25 @@ export function LoginScreen({
     canSubmitLogin: loginReady,
   });
 
+  /**
+   * 手机号填满了、但协议还没勾：按钮是灰的，必须说明原因。
+   * 否则用户（和审核员）只会觉得 App 卡住了——这正是之前被卡住的那一步。
+   */
+  const needsConsent = !acceptedPolicy && phone.trim().length === 11;
+
   return (
-    <Screen style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <Screen style={styles.flex}>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          automaticallyAdjustKeyboardInsets
+          showsVerticalScrollIndicator={false}
+        >
       <View style={{ marginBottom: theme.spacing.lg }}>
         <Text style={[styles.title, { color: theme.color.textPrimary }]}>时纪流</Text>
         <Text style={{ color: theme.color.textSecondary }}>ChronoFlow</Text>
@@ -189,6 +226,7 @@ export function LoginScreen({
           value={phone}
           onChangeText={setPhone}
           keyboardType="phone-pad"
+          inputAccessoryViewID={Platform.OS === 'ios' ? KEYBOARD_ACCESSORY_ID : undefined}
           placeholder="11 位手机号"
           accessibilityLabel="手机号"
           placeholderTextColor={theme.color.textTertiary}
@@ -209,6 +247,7 @@ export function LoginScreen({
                 value={code}
                 onChangeText={setCode}
                 keyboardType="number-pad"
+                inputAccessoryViewID={Platform.OS === 'ios' ? KEYBOARD_ACCESSORY_ID : undefined}
                 maxLength={6}
                 placeholder="6 位数字"
                 accessibilityLabel="验证码"
@@ -243,6 +282,7 @@ export function LoginScreen({
                 autoCorrect={false}
                 autoComplete="off"
                 importantForAutofill="no"
+                inputAccessoryViewID={Platform.OS === 'ios' ? KEYBOARD_ACCESSORY_ID : undefined}
                 placeholder="设置过的登录密码"
                 accessibilityLabel="密码"
                 placeholderTextColor={theme.color.textTertiary}
@@ -271,6 +311,12 @@ export function LoginScreen({
 
         {error ? (
           <Text style={{ color: theme.color.danger, fontSize: 13, marginTop: theme.spacing.sm }}>{error}</Text>
+        ) : null}
+
+        {needsConsent ? (
+          <Text style={{ color: theme.color.textTertiary, fontSize: 12, marginTop: theme.spacing.sm }}>
+            请先勾选下方的协议，才能获取验证码并登录
+          </Text>
         ) : null}
 
         <View style={{ height: theme.spacing.lg }} />
@@ -321,13 +367,46 @@ export function LoginScreen({
             </Text>
           </Text>
         </View>
-      </Card>
-    </Screen>
+        </Card>
+        </ScrollView>
+      </Screen>
+      {Platform.OS === 'ios' ? (
+        <InputAccessoryView nativeID={KEYBOARD_ACCESSORY_ID}>
+          <View style={styles.accessory}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="收起键盘"
+              hitSlop={8}
+              onPress={() => Keyboard.dismiss()}
+            >
+              <Text style={[styles.accessoryDone, { color: theme.color.accent }]}>完成</Text>
+            </Pressable>
+          </View>
+        </InputAccessoryView>
+      ) : null}
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { justifyContent: 'center', paddingHorizontal: 24 },
+  flex: { flex: 1 },
+  content: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 32,
+  },
+  accessory: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#C6C6C8',
+    backgroundColor: '#F2F2F7',
+  },
+  accessoryDone: { fontSize: 16, fontWeight: '600' },
   title: { fontSize: 34, fontWeight: '600', letterSpacing: -0.5 },
   label: { fontSize: 13, marginBottom: 6 },
   input: { height: 48, borderWidth: 1, paddingHorizontal: 12, fontSize: 16 },

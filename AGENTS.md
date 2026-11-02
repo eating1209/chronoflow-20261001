@@ -14,6 +14,7 @@
 - **合规**：隐私政策 **v1.3（2026-11-01）**，§2.7.1 / §4.1 / §9.1 / §9.2 已改为「语音需要联网、不在手机本地识别」；《已收集清单》第 25 条、《第三方共享清单》第 8 条同步；`check_compliance.py` 改为必须披露语音并校验 `RECORD_AUDIO`，`check_apk.sh` 改为必须含 `RECORD_AUDIO`。
 - **验证**：App **42 个测试文件 / 303 项**、typecheck、依赖边界通过。真机（vivo V2031EA / Android 10 / arm64）云端约 1 秒；断网路径已改为直接报错，待正式包复验。
 - **真机包**：`app/android/app/build/outputs/apk/release/app-release.apk`，86MB，**debug 签名**，版本仍 **1.1.0 / 19**，代码**未提交**。
+- **2026-11-02 人工核查发现**：线上 `chronocloud.top` 的隐私政策仍是 **v1.1**（没有语音/麦克风），必须先 `deploy_backend.sh`；首启摘要补了「语音」、注销路径改成实际入口「我的 → 账号与安全 → 账号注销」；`check_apk.sh` 修了 Windows 下 ABI 误报、`apksigner.bat` 识别与 Python GBK 输出问题；APK 已去掉未使用的生物识别权限。
 
 ### 本机出包踩坑（Windows）
 

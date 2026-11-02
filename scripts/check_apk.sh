@@ -15,6 +15,11 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APK="${1:-$ROOT/app/android/app/build/outputs/apk/release/app-release.apk}"
 
+# Windows 的 Python 默认按 GBK 输出；下面检查脚本会打印「✓」，不强制 UTF-8 会直接
+# UnicodeEncodeError，把「16KB 对齐通过」误判成失败。
+export PYTHONIOENCODING=utf-8
+export PYTHONUTF8=1
+
 if [ ! -f "$APK" ]; then
   echo "✗ 没找到 APK：$APK" >&2
   echo "  先出包：bash scripts/build_apk.sh --release --archs=arm64-v8a" >&2
@@ -25,13 +30,37 @@ echo "检查：$APK"
 ls -lh "$APK" | awk '{print "  大小："$5}'
 FAIL=0
 
+# Python 只用于 zip / ELF 解析。Windows 上 `python3` 可能是 Microsoft Store 的空壳
+# （执行直接退出 49、没有任何输出）；必须用 `-c` 探一下是否真的能跑，否则 ABI 会被
+# 误判成「没有原生库」——2026-11-02 就因此在真机上误报过一次。
+PYTHON=""
+if command -v python3 >/dev/null 2>&1 && python3 -c "import sys" >/dev/null 2>&1; then
+  PYTHON=python3
+elif command -v python >/dev/null 2>&1 && python -c "import sys" >/dev/null 2>&1; then
+  PYTHON=python
+elif command -v py >/dev/null 2>&1 && py -3 -c "import sys" >/dev/null 2>&1; then
+  PYTHON="py -3"
+fi
+
 # ---- 1. ABI：这条就是这次被驳回的原因 ----
-ABIS=$(python3 - "$APK" <<'PY'
+if [ -n "$PYTHON" ]; then
+  ABIS=$($PYTHON - "$APK" <<'PY'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as apk:
     print(" ".join(sorted({n.split('/')[1] for n in apk.namelist() if n.startswith("lib/")})))
 PY
-)
+  )
+else
+  # 没有可用的 Python 时回退到 unzip：ABI 这一项不该因为环境问题误报
+  if command -v unzip >/dev/null 2>&1; then
+    ABIS=$(unzip -l "$APK" 2>/dev/null | sed -n 's#.*lib/\([^/]*\)/.*#\1#p' | sort -u | tr '\n' ' ')
+    echo "  ! 没有可用的 python3，ABI 改用 unzip 解析；16KB 对齐仍需 Python"
+  else
+    ABIS=""
+    echo "  ! 没有可用的 python3 也没有 unzip，无法检查 ABI"
+  fi
+fi
+ABIS=$(echo "$ABIS" | xargs)
 echo "  ABI：${ABIS:-（没有原生库）}"
 case " $ABIS " in
   *" arm64-v8a "*)
@@ -60,7 +89,14 @@ if [ -n "$SDK_DIR" ]; then
 
   # ---- 3. 正式签名 ----
   APKSIGNER="$(dirname "$AAPT2")/apksigner"
-  if [ -x "$APKSIGNER" ]; then
+  # Windows 的 build-tools 里是 apksigner.bat，没有无扩展名的可执行文件；
+  # Git Bash 下 .bat 通常没有可执行位，所以用 -f 判断而不是 -x
+  if [ -f "${APKSIGNER}.bat" ]; then
+    APKSIGNER="${APKSIGNER}.bat"
+  elif [ -f "${APKSIGNER}.exe" ]; then
+    APKSIGNER="${APKSIGNER}.exe"
+  fi
+  if [ -x "$APKSIGNER" ] || [ -f "${APKSIGNER}" ]; then
     if "$APKSIGNER" verify "$APK" >/dev/null 2>&1; then
       MD5=$("$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | sed -n 's/.*certificate MD5 digest: //p' | head -1)
       echo "  ✓ 签名有效（MD5 $MD5）"
@@ -71,7 +107,8 @@ if [ -n "$SDK_DIR" ]; then
 fi
 
 # ---- 4. 16KB 页对齐（Android 15+ 的 16KB 页机型，不对齐会装不上/闪退）----
-python3 - "$APK" <<'PY' || FAIL=1
+if [ -n "$PYTHON" ]; then
+  $PYTHON - "$APK" <<'PY' || FAIL=1
 import struct, sys, zipfile
 path = sys.argv[1]
 bad, checked = [], 0
@@ -102,6 +139,11 @@ if bad:
     sys.exit(1)
 print("  ✓ 全部 16KB 对齐")
 PY
+else
+  echo "  ✗ 无法检查 16KB 对齐：需要可用的 python3（或 python / py -3）"
+  echo "    先安装 Python 3.12 再重跑；未检查不能当作通过"
+  FAIL=1
+fi
 
 # ---- 5. 权限：高危的不能有；语音要的麦克风必须有 ----
 if [ -n "$SDK_DIR" ] && [ -x "$AAPT2" ]; then

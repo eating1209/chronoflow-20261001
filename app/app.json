@@ -35,7 +35,9 @@
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.ACCESS_BACKGROUND_LOCATION",
         "android.permission.READ_PHONE_STATE",
-        "android.permission.QUERY_ALL_PACKAGES"
+        "android.permission.QUERY_ALL_PACKAGES",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
       ]
     },
     "plugins": [

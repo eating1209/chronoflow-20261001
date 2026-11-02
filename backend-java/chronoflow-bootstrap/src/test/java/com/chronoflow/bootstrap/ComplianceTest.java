@@ -116,7 +116,7 @@ class ComplianceTest {
         // 规范 §2.2：主体公司必须写在隐私政策里，且与商店后台的运营者一致
         assertThat(policy).contains(OPERATOR);
         // 规范 §2.7：必须写出注销步骤，且路径与 App 内真实入口一致
-        assertThat(policy).contains("账号注销").contains("我的 → 隐私与合规 → 账号注销");
+        assertThat(policy).contains("账号注销").contains("我的 → 账号与安全 → 账号注销");
         // 规范 §2.8：不做个性化推送就必须明说
         assertThat(policy).contains("不提供个性化推荐");
 

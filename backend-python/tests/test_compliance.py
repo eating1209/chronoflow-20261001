@@ -33,7 +33,7 @@ def test_legal_documents_are_public_and_static(client) -> None:
     assert OPERATOR in policy
     # 规范 §2.7：注销步骤必须写出来，且路径与 App 内真实入口一致
     assert "账号注销" in policy
-    assert "我的 → 隐私与合规 → 账号注销" in policy
+    assert "我的 → 账号与安全 → 账号注销" in policy
     # 规范 §2.8：不做个性化推送就必须明说
     assert "不提供个性化推荐" in policy
 

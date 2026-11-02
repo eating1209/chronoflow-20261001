@@ -21,7 +21,7 @@
  * 通知（`POST_NOTIFICATIONS`）是 2026-09-27 新增的：日程/待办的到点提醒走本地通知
  * （spec §4.5），因此必须在申请前说明用途，隐私政策 §9.2 的权限清单也要同步列出。
  */
-export type PermissionKind = 'photo' | 'camera' | 'location' | 'notification';
+export type PermissionKind = 'photo' | 'camera' | 'location' | 'notification' | 'microphone';
 
 export interface PermissionRationale {
   /** 说明弹窗标题 */
@@ -65,6 +65,15 @@ export const PERMISSION_RATIONALE: Record<PermissionKind, PermissionRationale> =
       + '提醒由您的手机在本地发出，我们不通过服务端推送，也不会把日程内容交给第三方。\n\n'
       + '您也可以选择「不允许」，日程与待办照常使用，只是到点不会有提醒。',
     deniedHint: '未获得通知权限，日程与待办照常使用；如需提醒可在系统设置里打开通知，其他功能不受影响。',
+  },
+  microphone: {
+    title: '需要使用麦克风',
+    message:
+      '用于「按住说话」：把您说的一句话转成文字，再识别成日程草稿。\n\n'
+      + '录音只用于这一次转写，转完立即删除，我们不会保存、也不会用于训练。'
+      + '语音需要联网：录音会上传到我们的服务器，再由服务端转给模型服务商完成转写。\n\n'
+      + '您也可以选择「不允许」，改用键盘输入，其他功能不受影响。',
+    deniedHint: '未获得麦克风权限，语音输入不可用；您仍可手工输入，其他功能不受影响。',
   },
 };
 

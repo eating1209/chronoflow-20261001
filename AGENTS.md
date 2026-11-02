@@ -2,7 +2,35 @@
 
 # AGENTS.md —— 时纪流（ChronoFlow）会话交接文档
 
-## 2026-10-28 本轮交接（最新）
+## 2026-11-01 本轮交接（最新）：语音输入（任务 10）
+
+- **最终口径：只走云端。** 长按说话 → `POST /api/v1/ai/transcribe`（百炼 `qwen3-asr-flash`）→ 繁转简 → 可编辑文字 → `/ai/events/parse-text` → 与拍照识别共用的确认页。断网时如实提示「语音需要联网」，**没有本地兜底**。
+- **入口**：日历页「点此识别日程，一键添加」→「语音输入」。页面五态：按住 / 录音 / 上滑取消 / 识别中 / 失败。
+- **代码**：新增 `app/src/modules/asr/`（domain、engines/cloud、recording、screens、service，约 1067 行）与 `app/test/asr.test.ts`；`App.tsx` 加 `VoiceInput` 路由；`AgendaScreen` 来源面板加语音；`endpoints.ts` 加 `transcribeAudio`；`shared/permissions.ts` 加麦克风与用途说明。
+- **录音**：自带原生模块 `app/plugins/withPcmRecorder.js`（16kHz 单声道 PCM WAV，`AudioRecord` 直写），与 `withSystemLocation` 同一套 prebuild 注入；不用 `expo-audio`（只能录 m4a/aac）。`app.json` 已把 `RECORD_AUDIO` 从 `blockedPermissions` 移除并加入 `permissions`。
+- **中文输出**：`domain/chinese.ts` 用 `opencc-js/t2cn`（107KB）统一繁转简；云端偶尔出繁体。
+- **离线已移除**：开发中曾接 Whisper（`whisper.rn` + `ggml-base-q5_1`），真机实测输出繁体、3 秒音频 8.7–9.7 秒、准确率不足；已删除依赖、`engines/whisper.ts`、`onDevice.ts`、`register.ts`、`fetch_asr_models.sh` 与 59MB 模型。APK 143MB → **86MB**。
+- **服务端无新增端点**：`/ai/transcribe` 两版后端与契约早已存在；`CHRONOFLOW_ASR_API_KEY` 留空时回退 `CHRONOFLOW_AGENT_API_KEY`。
+- **合规**：隐私政策 **v1.3（2026-11-01）**，§2.7.1 / §4.1 / §9.1 / §9.2 已改为「语音需要联网、不在手机本地识别」；《已收集清单》第 25 条、《第三方共享清单》第 8 条同步；`check_compliance.py` 改为必须披露语音并校验 `RECORD_AUDIO`，`check_apk.sh` 改为必须含 `RECORD_AUDIO`。
+- **验证**：App **42 个测试文件 / 303 项**、typecheck、依赖边界通过。真机（vivo V2031EA / Android 10 / arm64）云端约 1 秒；断网路径已改为直接报错，待正式包复验。
+- **真机包**：`app/android/app/build/outputs/apk/release/app-release.apk`，86MB，**debug 签名**，版本仍 **1.1.0 / 19**，代码**未提交**。
+
+### 本机出包踩坑（Windows）
+
+1. `local.properties` 的 `sdk.dir` 必须用正斜杠；单反斜杠会被 Properties 吞掉，报「文件名、目录名或卷标语法不正确」。
+2. Gradle wrapper 下载报 PKIX；用腾讯镜像下 `gradle-9.3.1-bin.zip`，按 MD5(base36) 放入 `~/.gradle/wrapper/dists/gradle-9.3.1-bin/<hash>/`。
+3. `patch-third-party-gradle.sh` 依赖 `python3`（本机是 Store 空壳，退出 49）；用 Node 做同样替换：onnxruntime `VersionNumber` 分支 + CMake 16KB 对齐。
+4. npm 把 `expo-modules-core` 嵌套在 `expo/node_modules`，Metro 解析不到；`npx expo install expo-modules-core` 提成直接依赖。
+5. 没有 `expo-dev-client` 时，Expo 57 的 debug 包固定走 `loadJSBundleFromAssets`，不连 Metro；真机测试直接出 release。移除模型后要删 `app/android/app/build` 再 `assembleRelease`——`gradlew clean` 会连带删掉 webview codegen，C++ 报 `GLOB mismatch`。
+
+### 上架前（未做）
+
+- 找回正式 keystore 并设置四个 `CHRONOFLOW_KEY*`；版本号 19 → 20。
+- 部署后端（隐私政策 v1.3）并配置 `CHRONOFLOW_ASR_API_KEY`；确认 `chronocloud.top` 已反代到当前后端。
+- 备案/审核：应用宝 AI 特殊行业口径、麦克风权限说明、工信部/公安备案负责人变更。
+- 16KB 页机型验收；iOS 若暂不支持语音，应隐藏入口。
+
+## 2026-10-28 本轮交接
 
 - 用户是**陶伊婷**（成员 6、法定代表人、项目技术负责人）。本轮做成员 6 的任务 2（弹窗提醒）和任务 5（服务端数据保留）。
 - 提醒动作已完成：日程通知有「稍后 10 分钟」，待办通知有「稍后 10 分钟 / 完成」；点「完成」会调用服务端完成待办，再清理普通提醒和稍后提醒。入口在 `app/src/App.tsx`、`app/src/modules/notifications/reminderActions.ts`、`scheduler.ts`、`listener.ts`。

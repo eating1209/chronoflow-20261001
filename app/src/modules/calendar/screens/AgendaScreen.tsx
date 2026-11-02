@@ -64,6 +64,7 @@ export function AgendaScreen({
   onOpenTask,
   onOpenOrgEvent,
   onReviewDrafts,
+  onVoiceInput,
 }: {
   onCreateEvent: (dateKey: string) => void;
   onOpenEvent: (eventId: number, dateKey: string, occurrenceDate: string | null) => void;
@@ -72,6 +73,8 @@ export function AgendaScreen({
   onOpenOrgEvent: (identityId: number, dateKey: string) => void;
   /** 图片识别出的日程草稿：进确认页补日期 / 改标题，用户确认后再落库（spec §4.1.9） */
   onReviewDrafts: (drafts: RecognizedDraft[]) => void;
+  /** 语音输入：进「按住说话」页面（spec §4.1.9.1） */
+  onVoiceInput: () => void;
 }) {
   const theme = useAppTheme();
   const insets = useSafeAreaInsets();
@@ -89,7 +92,7 @@ export function AgendaScreen({
   const [holidayError, setHolidayError] = useState(false);
   /** 正在识别（选图 → 端侧 OCR → 云端解析）：期间按钮显示「识别中…」并禁用 */
   const [recognizing, setRecognizing] = useState(false);
-  /** 「上传图片」来源选择层：相册上传 / 拍照上传（取消单独一条，见 JSX） */
+  /** 「识别日程」来源选择层：相册上传 / 拍照上传 / 语音输入（取消单独一条，见 JSX） */
   const [sourceOpen, setSourceOpen] = useState(false);
   /**
    * 弹层的动画进度：0 = 完全收起（在屏幕外），1 = 完全展开。
@@ -449,17 +452,18 @@ export function AgendaScreen({
           />
 
           {/*
-            日历下方的文字按钮：点此上传图片 → 一键添加日程（spec §4.1.9）。
-            链路：选来源（相册/拍照）→ 端侧 OCR（图片不出手机）→ 云端解析文字 →
-            确认页（补日期 / 改标题）→ 逐条写进日历。见 src/modules/vision/ocr/onDevice.ts 与
-            src/modules/vision/screens/EventImportScreen.tsx。
+            日历下方的文字按钮：识别日程（spec §4.1.9 / §4.1.9.1）。
+            面板里三个来源：
+            - 相册 / 拍照 → 端侧 OCR（图片不出手机）→ 云端解析文字；
+            - 语音 → 转写（云端优先、本机兜底）→ 同一段云端解析文字；
+            最后都进确认页（补日期 / 改标题）→ 逐条写进日历。
           */}
           {/* 按钮上下各一条横线：把它做成月历与当日日程之间独立的一条带 */}
           <View style={[styles.divider, { backgroundColor: theme.color.border }]} />
 
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="点此上传图片，一键添加日程"
+            accessibilityLabel="点此识别日程：上传图片或语音输入"
             accessibilityState={{ busy: recognizing, disabled: recognizing }}
             disabled={recognizing}
             hitSlop={8}
@@ -467,7 +471,7 @@ export function AgendaScreen({
             style={styles.uploadEntry}
           >
             <Text style={{ color: theme.color.accent, fontSize: 14, fontWeight: '600' }}>
-              {recognizing ? '识别中…' : '点此上传图片，一键添加日程'}
+              {recognizing ? '识别中…' : '点此识别日程，一键添加'}
             </Text>
           </Pressable>
 
@@ -668,7 +672,7 @@ export function AgendaScreen({
               ]}
               accessibilityViewIsModal
             >
-              <Text style={[styles.sheetTitle, { color: theme.color.textTertiary }]}>上传图片</Text>
+              <Text style={[styles.sheetTitle, { color: theme.color.textTertiary }]}>识别日程</Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="相册上传"
@@ -687,6 +691,19 @@ export function AgendaScreen({
               >
                 <Ionicons name="camera-outline" size={20} color={theme.color.textPrimary} />
                 <Text style={{ color: theme.color.textPrimary, fontSize: 16 }}>拍照上传</Text>
+              </Pressable>
+              <View style={[styles.sheetDivider, { backgroundColor: theme.color.border }]} />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="语音输入"
+                onPress={() => {
+                  closeSourceSheet();
+                  onVoiceInput();
+                }}
+                style={styles.sheetRow}
+              >
+                <Ionicons name="mic-outline" size={20} color={theme.color.textPrimary} />
+                <Text style={{ color: theme.color.textPrimary, fontSize: 16 }}>语音输入</Text>
               </Pressable>
             </View>
             {/* 取消单独一张，不跟上面两条挤在一起 */}

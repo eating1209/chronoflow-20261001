@@ -25,6 +25,7 @@ import {
   type DraftEdit,
   type RecognizedDraft,
 } from './modules/vision';
+import { VoiceInputScreen } from './modules/asr';
 import { LegalScreen, PrivacyConsentScreen } from './modules/compliance';
 import {
   buildConsentRecord,
@@ -160,6 +161,8 @@ type MainTabsProps = {
   onOpenOrgAccounts: () => void;
   /** 图片识别出来一批日程草稿：进确认页让用户补日期 / 改标题，再一键添加（spec §4.1.9） */
   onReviewDrafts: (drafts: RecognizedDraft[]) => void;
+  /** 语音输入：进「按住说话」页面（spec §4.1.9.1） */
+  onVoiceInput: () => void;
   /** 组织管理员在手机上新建并下发组织日程（spec §4.2.2） */
   onCreateOrgEvent: (dateKey: string) => void;
   /** 编辑自己下发的组织日程（spec §4.2.2：只有发起人能改） */
@@ -185,6 +188,7 @@ function MainTabs({
   onEditOrgEvent,
   onOpenOrgEvent,
   onReviewDrafts,
+  onVoiceInput,
   onOpenProfileEdit,
   onOpenSection,
   onOpenAvatarCrop,
@@ -225,6 +229,8 @@ function MainTabs({
             onOpenOrgEvent={onOpenOrgEvent}
             // 图片识别出草稿后进确认页（spec §4.1.9）
             onReviewDrafts={onReviewDrafts}
+            // 语音输入（spec §4.1.9.1）：按住说话 → 转写 → 同一条确认页
+            onVoiceInput={onVoiceInput}
           />
         )}
       </Tabs.Screen>
@@ -261,6 +267,8 @@ function MainTabs({
 type AppStackParamList = {
   Main: undefined;
   EventEditor: { dateKey: string; eventId?: number; occurrenceDate?: string | null };
+  /** 语音输入：按住说话 → 转写 → 解析成日程（spec §4.1.9.1） */
+  VoiceInput: undefined;
   /** 图片识别出的日程草稿 → 确认页（补日期 / 改标题 / 一键添加，spec §4.1.9） */
   EventImport: { drafts: RecognizedDraft[] };
   /** 确认页里点开的某一条草稿 → 整页编辑器（草稿模式，改完回传、不落库） */
@@ -490,6 +498,7 @@ function MainStack() {
               navigation.navigate('TaskEditor', { taskId });
             }}
             onReviewDrafts={(drafts) => navigation.navigate('EventImport', { drafts })}
+            onVoiceInput={() => navigation.navigate('VoiceInput')}
             onOpenOrgAccounts={() => navigation.navigate('OrgAccounts')}
             onCreateOrgEvent={(dateKey) => navigation.navigate('OrgEventEditor', { dateKey })}
             onEditOrgEvent={(event) =>
@@ -547,6 +556,17 @@ function MainStack() {
             onPickReminder={(current) => navigation.navigate('ReminderPicker', { initial: current })}
             onCancel={() => navigation.goBack()}
             onSaved={() => navigation.goBack()}
+          />
+        )}
+      </AppStack.Screen>
+
+      {/* 语音输入：按住说话 → 转写 → 解析 → 与拍照识别共用的确认页（spec §4.1.9.1） */}
+      <AppStack.Screen name="VoiceInput">
+        {({ navigation }) => (
+          <VoiceInputScreen
+            onCancel={() => navigation.goBack()}
+            // replace：从确认页返回时回到日历，而不是又回到录音页
+            onReviewDrafts={(drafts) => navigation.replace('EventImport', { drafts })}
           />
         )}
       </AppStack.Screen>

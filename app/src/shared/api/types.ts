@@ -282,6 +282,17 @@ export interface ParsedEventItem {
   description?: string | null;
 }
 
+/**
+ * 语音转文字的结果（`POST /ai/transcribe`，spec §4.1.9.1）。
+ *
+ * <p>服务端只回文字与语言；音频只在内存里转发给百炼，不落盘、不保存。
+ * `language` 可能为空（上游没给），界面不要拿它做判断。
+ */
+export interface TranscriptionResult {
+  text: string;
+  language?: string | null;
+}
+
 export interface OrgEvent {
   eventId: number;
   dispatchId: number;

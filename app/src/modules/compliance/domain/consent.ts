@@ -6,7 +6,7 @@
  */
 
 /** 当前生效的隐私政策版本。改了 docs/legal/privacy-policy.md 的版本号就要同步这里。 */
-export const PRIVACY_POLICY_VERSION = '1.1';
+export const PRIVACY_POLICY_VERSION = '1.3';
 
 export interface ConsentRecord {
   version: string;

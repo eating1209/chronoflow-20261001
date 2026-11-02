@@ -26,6 +26,7 @@ import type {
   TokenResponse,
   UploadedImage,
   ParsedEventItem,
+  TranscriptionResult,
 } from '../shared/api';
 
 export interface CalendarSummary {
@@ -357,6 +358,19 @@ export function createEndpoints(client: ApiClient) {
      */
     parseScheduleText: (payload: { text: string; today: string; timezone: string }) =>
       client.post<{ items: ParsedEventItem[] }>('/api/v1/ai/events/parse-text', payload),
+    /**
+     * 语音 → 文字（spec §4.1.9.1）。
+     *
+     * <p>与 `uploadImage` 同一条 multipart 路径：必须用 expo-file-system 的 File，
+     * 不能写 `{ uri, name, type }`（Expo SDK 57 的 fetch 不接受，见 `uploadImage` 的注释）。
+     * 音频只在服务端内存里转发给百炼，**不落盘、不保存**；
+     * 未配置 ASR 时返回 90002，由调用方回退到本机识别。
+     */
+    transcribeAudio: (uri: string) => {
+      const form = new FormData();
+      form.append('file', new File(uri) as unknown as Blob);
+      return client.upload<TranscriptionResult>('/api/v1/ai/transcribe', form);
+    },
     /**
      * 系统元信息（免登录）。App 用它判断「小安」有没有接入模型（aiAgentEnabled），
      * 避免界面看起来能用、点了却装死（spec §11 阶段三）。

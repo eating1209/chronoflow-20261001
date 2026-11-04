@@ -147,3 +147,73 @@ def test_parse_text_unconfigured_reports_unavailable() -> None:
         vision_text.parse("9 月 24 日前登记", "2026-09-30", "Asia/Shanghai")
     assert failure.value.code == ErrorCode.THIRD_PARTY_UNAVAILABLE
     assert "解析模型未配置" in failure.value.message
+
+
+# ------------------------------------------------ 「周四被算成周五」的兜底（2026-11-03，P1）
+
+
+def test_prompt_carries_the_weekday_table() -> None:
+    """提示词必须给出「日期 + 星期」对照表：模型算不对今天星期几，就别让它推。"""
+    from app.services import vision_text
+
+    prompt = vision_text.template()
+    assert "{{date_table}}" in prompt
+    assert "日期只查表，不做心算" in prompt
+    assert "{{today}}" in prompt
+
+
+def test_date_guard_acceptance_cases_from_the_bug_report() -> None:
+    """bug 报告 §5.4 的验收表：2026-11-03 那天是周二，「本周四」不能再落成 11-06（周五）。"""
+    from datetime import date
+    from zoneinfo import ZoneInfo
+
+    from app.services import event_date_guard as guard
+
+    zone = ZoneInfo("Asia/Shanghai")
+    today = date(2026, 11, 3)
+    assert guard.date_table(today, 3).splitlines() == [
+        "- 2026-11-03 周二（今天）",
+        "- 2026-11-04 周三（明天）",
+        "- 2026-11-05 周四（后天）",
+    ]
+
+    cases = {
+        "今天下午4点开会": ("2026-11-03T16:00:00+08:00", "2026-11-03"),
+        "明天下午3点开会": ("2026-11-04T15:00:00+08:00", "2026-11-04"),
+        "后天下午3点开会": ("2026-11-05T15:00:00+08:00", "2026-11-05"),
+        "周四下午3点30开会": ("2026-11-06T15:30:00+08:00", "2026-11-05"),
+        "本周四下午2点开会": ("2026-11-06T14:00:00+08:00", "2026-11-05"),
+        "本周五下午2点开会": ("2026-11-07T14:00:00+08:00", "2026-11-06"),
+        "本周一下午2点开会": ("2026-11-02T14:00:00+08:00", "2026-11-02"),
+        "本周六下午2点开会": ("2026-11-07T14:00:00+08:00", "2026-11-07"),
+        "本周日下午2点开会": ("2026-11-08T14:00:00+08:00", "2026-11-08"),
+    }
+    for text, (given, expected) in cases.items():
+        fixed, _ = guard.guard_at(text, given, zone)
+        assert fixed is not None
+        assert fixed.startswith(expected), f"{text}: {given} -> {fixed}"
+
+
+def test_date_guard_keeps_the_time_of_day() -> None:
+    """只挪日期，不能顺手把 15:30 改成 00:00——纠星期不等于重新猜时刻。"""
+    from zoneinfo import ZoneInfo
+
+    from app.services import event_date_guard as guard
+
+    fixed, note = guard.guard_at("周四下午3点30开会", "2026-11-06T15:30:00+08:00", ZoneInfo("Asia/Shanghai"))
+    assert fixed == "2026-11-05T15:30:00+08:00"
+    assert note and "周四" in note
+
+
+def test_date_guard_does_not_guess_without_evidence() -> None:
+    """没有「周 X」、没有日期、或者同时提到多个星期，都不动数据。"""
+    from zoneinfo import ZoneInfo
+
+    from app.services import event_date_guard as guard
+
+    zone = ZoneInfo("Asia/Shanghai")
+    assert guard.guard_at("11月6日下午3点开会", "2026-11-06T15:00:00+08:00", zone)[0] == "2026-11-06T15:00:00+08:00"
+    assert guard.guard_at("本周四交材料", None, zone) == (None, None)
+    fixed, note = guard.guard_at("周一交材料，周五开会", "2026-11-04T15:00:00+08:00", zone)
+    assert fixed == "2026-11-04T15:00:00+08:00"
+    assert note and "多个星期" in note

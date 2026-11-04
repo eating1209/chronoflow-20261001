@@ -11,13 +11,16 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ..errors import ApiError, ErrorCode
-from . import agent_model
+from . import agent_model, event_date_guard
+
+logger = logging.getLogger(__name__)
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "resources" / "agent" / "vision-prompt.md"
 # OCR 文字上限：一张通知再长也就几千字，超了多半是把整本书拍进来了
@@ -63,14 +66,43 @@ def parse(text: str | None, today: str, timezone: str) -> list[ParsedEventDraft]
         raise ApiError(ErrorCode.PARAM_MISSING, "缺少要解析的文字")
 
     zone = ZoneInfo(timezone or "Asia/Shanghai")
+    # 「今天」连同星期一起交给模型，并附 14 天对照表：它算不对星期几（2026-11-03 那个 bug 的根因），
+    # 与其教它推导，不如把答案摆出来让它抄
+    today_date = _resolve_today(today, zone)
     prompt = (
         template()
-        .replace("{{today}}", today or "")
+        .replace(
+            "{{today}}",
+            f"{today_date.isoformat()}（{event_date_guard.weekday_cn(today_date.weekday())}）",
+        )
+        .replace("{{date_table}}", event_date_guard.date_table(today_date))
         .replace("{{timezone}}", zone.key)
         .replace("{{text}}", text[:MAX_TEXT_LENGTH])
     )
     reply = agent_model.client().complete_json(prompt)
-    return parse_items(reply, zone.key)
+    # 提示词是让它抄对；这里是不信它抄对：文字说「周四」而日期是周五时拉回周四
+    return _guard_dates(text, parse_items(reply, zone.key), zone)
+
+
+def _resolve_today(today: str | None, zone: ZoneInfo) -> date:
+    """客户端给的「今天」不可信也不该炸：解析不了就退回服务端日期，永远给模型一个确定基准。"""
+    if today:
+        try:
+            return date.fromisoformat(today.strip())
+        except ValueError:
+            logger.warning("日期解析：客户端给的 today「%s」不是 YYYY-MM-DD，改按服务端日期处理", today)
+    return datetime.now(zone).date()
+
+
+def _guard_dates(text: str, drafts: list[ParsedEventDraft], zone: ZoneInfo) -> list[ParsedEventDraft]:
+    """按文字里提到的星期纠正草稿日期；`at` 为空的条目（没写日期）原样保留。"""
+    guarded: list[ParsedEventDraft] = []
+    for draft in drafts:
+        at, note = event_date_guard.guard_at(text, draft.at, zone)
+        if note:
+            logger.info("日期校验：%s（标题：%s）", note, draft.title)
+        guarded.append(draft if at == draft.at else replace(draft, at=at))
+    return guarded
 
 
 def parse_items(reply: str | None, timezone: str) -> list[ParsedEventDraft]:

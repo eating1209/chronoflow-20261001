@@ -19,8 +19,10 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -68,8 +70,12 @@ public class AgentTextParseService {
         }
         String trimmed = text.length() > MAX_TEXT_LENGTH ? text.substring(0, MAX_TEXT_LENGTH) : text;
         ZoneId zone = ZoneId.of(StringUtils.hasText(timezone) ? timezone : "Asia/Shanghai");
+        // 「今天」连同星期一起交给模型，并附 14 天对照表：它算不对星期几（2026-11-03 那个 bug 的根因），
+        // 与其教它推导，不如把答案摆出来让它抄。
+        LocalDate todayDate = resolveToday(today, zone);
         String prompt = template
-                .replace("{{today}}", today == null ? "" : today)
+                .replace("{{today}}", todayDate + "（" + EventDateGuard.weekdayCn(todayDate.getDayOfWeek()) + "）")
+                .replace("{{date_table}}", EventDateGuard.dateTable(todayDate, EventDateGuard.TABLE_DAYS))
                 .replace("{{timezone}}", zone.getId())
                 .replace("{{text}}", trimmed);
 
@@ -79,11 +85,25 @@ public class AgentTextParseService {
                 CompletionRequest.structured(List.of(AgentMessage.user(prompt))),
                 delta -> { });
         long modelMs = (System.nanoTime() - startedAt) / 1_000_000;
-        List<ParsedEventDraft> drafts = parseItems(result.text(), zone);
+        // 提示词是让它抄对；这里是不信它抄对：文字说「周四」而日期是周五时拉回周四
+        List<ParsedEventDraft> drafts = EventDateGuard.apply(
+                trimmed, todayDate, parseItems(result.text(), zone), zone, log::warn);
         // 耗时埋点：OCR 在手机端（客户端日志），这里只报服务端这一段（绝大部分是模型时间）
         log.info("识别解析：模型 {} ms，文字 {} 字 → 草稿 {} 条（{}）",
                 modelMs, trimmed.length(), drafts.size(), modelClient.providerName());
         return drafts;
+    }
+
+    /** 客户端给的「今天」不可信也不该炸：解析不了就退回服务端日期，永远给模型一个确定的基准。 */
+    private static LocalDate resolveToday(String today, ZoneId zone) {
+        if (StringUtils.hasText(today)) {
+            try {
+                return LocalDate.parse(today.trim());
+            } catch (DateTimeParseException ex) {
+                log.warn("日期解析：客户端给的 today「{}」不是 YYYY-MM-DD，改按服务端日期处理", today);
+            }
+        }
+        return LocalDate.now(zone);
     }
 
     /**

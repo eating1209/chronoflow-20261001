@@ -1,5 +1,14 @@
-import { useCallback, useState } from 'react';
-import { StyleSheet, Switch, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Alert,
+  AppState,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
+} from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect } from '@react-navigation/native';
 
@@ -16,6 +25,16 @@ import {
 } from '../../notifications';
 import { LEGAL_DOCS, OPERATOR_NAME, type LegalDoc } from '../../compliance/pure';
 import { maskPhone } from '../../identity';
+import type { TrainingDataPreference } from '../../../api/endpoints';
+import { askPermission } from '../../../shared/permission';
+import {
+  clearTaskBarNotification,
+  requestTaskBarOverlayPermission,
+  setTaskBarOverlayEnabled,
+  syncTaskBarNotification,
+  taskBarOverlayEnabled,
+  taskBarOverlayPermissionGranted,
+} from '../../tasks';
 
 /** 「我的」页的五个分类。**每一个都是独立路由**（`SettingsSection`），不是在同一页里换内容。 */
 export type SettingsSectionKey = 'account' | 'preferences' | 'support' | 'legal' | 'about';
@@ -62,7 +81,13 @@ export function SettingsSectionScreen({
   const theme = useAppTheme();
   const scheme = useAppScheme();
   const { check: checkUpdate, currentVersionName } = useAppUpdate();
-  const { toggleScheme, notificationEnabled, setNotificationEnabled } = useAppSessionState();
+  const {
+    toggleScheme,
+    notificationEnabled,
+    setNotificationEnabled,
+    taskBarEnabled,
+    setTaskBarEnabled,
+  } = useAppSessionState();
   const { reminderSound, setReminderSound } = useAppSessionState();
   const { api, reminders } = useRuntime();
   /**
@@ -78,6 +103,48 @@ export function SettingsSectionScreen({
     realNameVerified: boolean;
     passwordSet: boolean;
   } | null>(null);
+  const [trainingData, setTrainingData] = useState<TrainingDataPreference | null>(null);
+  const [trainingBusy, setTrainingBusy] = useState(false);
+  const [overlayEnabled, setOverlayEnabled] = useState(false);
+  const [overlayBusy, setOverlayBusy] = useState(false);
+  const overlayRequestPending = useRef(false);
+
+  useEffect(() => {
+    let alive = true;
+    if (section === 'preferences') {
+      void taskBarOverlayEnabled().then((enabled) => {
+        if (alive) {
+          setOverlayEnabled(enabled);
+        }
+      });
+    }
+    return () => {
+      alive = false;
+    };
+  }, [section, taskBarEnabled]);
+
+  /** 从系统“显示在其他应用上层”页返回时，自动把刚才的开启动作做完。 */
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (
+        state !== 'active' ||
+        section !== 'preferences' ||
+        !overlayRequestPending.current
+      ) {
+        return;
+      }
+      void (async () => {
+        const granted = await taskBarOverlayPermissionGranted();
+        if (!granted) {
+          return;
+        }
+        overlayRequestPending.current = false;
+        const started = await setTaskBarOverlayEnabled(true);
+        setOverlayEnabled(started);
+      })();
+    });
+    return () => subscription.remove();
+  }, [section]);
 
   /**
    * 用 `useFocusEffect` 而不是普通 `useEffect`：实名认证、邮箱绑定、换手机号都是**独立的二级页**，
@@ -88,20 +155,31 @@ export function SettingsSectionScreen({
    */
   useFocusEffect(
     useCallback(() => {
-      if (section !== 'account') {
-        return undefined;
-      }
       let alive = true;
-      void api
-        .meSecurity()
-        .then((view) => {
-          if (alive) {
-            setSecurity(view);
-          }
-        })
-        .catch(() => {
-          // 读不到就按「未认证 / 未绑定」显示：这只是状态展示，不拦着用户点进去
-        });
+      if (section === 'account') {
+        void api
+          .meSecurity()
+          .then((view) => {
+            if (alive) {
+              setSecurity(view);
+            }
+          })
+          .catch(() => {
+            // 读不到就按「未认证 / 未绑定」显示：这只是状态展示，不拦着用户点进去
+          });
+      }
+      if (section === 'legal') {
+        void api
+          .trainingData()
+          .then((view) => {
+            if (alive) {
+              setTrainingData(view);
+            }
+          })
+          .catch(() => {
+            // 服务端还未升级时先不展示该开关，避免给用户一个点了就报错的入口
+          });
+      }
       return () => {
         alive = false;
       };
@@ -111,7 +189,12 @@ export function SettingsSectionScreen({
   return (
 <Screen>
       <EditorHeader title={SETTINGS_SECTION_TITLES[section]} cancelLabel="返回" onCancel={onBack} />
-      <View style={styles.body}>
+      <ScrollView
+        style={styles.bodyScroll}
+        contentContainerStyle={styles.body}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
 
       {section === 'account' ? (
         <ListGroup>
@@ -192,6 +275,124 @@ export function SettingsSectionScreen({
           />
           <ListSeparator inset={52} />
           {/*
+            通知卡是「持续通知」；顶部小条是它下面的独立开关，需要用户明确授权悬浮窗。
+            它和到点提醒分开，用户只想要总览时可以单开这一项。
+          */}
+          <ListRow
+            leading={<RowIcon name="phone-portrait-outline" />}
+            title="任务栏与锁屏显示"
+            subtitle={
+              taskBarEnabled
+                ? '通知栏常驻，锁屏显示最近截止与三色任务条'
+                : '已关闭，不在通知栏和锁屏显示任务总览'
+            }
+            trailing={
+              <Switch
+                value={taskBarEnabled}
+                onValueChange={(next) => {
+                  if (!next) {
+                    setTaskBarEnabled(false);
+                    overlayRequestPending.current = false;
+                    setOverlayEnabled(false);
+                    void setTaskBarOverlayEnabled(false);
+                    void clearTaskBarNotification();
+                    return;
+                  }
+                  void askPermission('notification').then((granted) => {
+                    if (!granted) {
+                      return;
+                    }
+                    setTaskBarEnabled(true);
+                    void syncTaskBarNotification({ api, enabled: true });
+                  });
+                }}
+                accessibilityLabel="任务栏与锁屏显示"
+                trackColor={{ false: theme.color.border, true: theme.color.accent }}
+                thumbColor={theme.color.surfaceRaised}
+              />
+            }
+          />
+          <ListSeparator inset={52} />
+          {Platform.OS === 'android' ? (
+            <>
+              <ListRow
+                leading={<RowIcon name="albums-outline" />}
+                title="顶部任务小条"
+                subtitle={
+                  overlayEnabled
+                    ? '状态栏下方常驻三色小条，点一下展开任务'
+                    : !taskBarEnabled
+                      ? '需先开启上方“任务栏与锁屏显示”'
+                      : '开启后需允许“显示在其他应用上层”'
+                }
+                trailing={
+                  <Switch
+                    value={overlayEnabled}
+                    disabled={overlayBusy || !taskBarEnabled}
+                    onValueChange={(next) => {
+                      if (!next) {
+                        overlayRequestPending.current = false;
+                        setOverlayEnabled(false);
+                        void setTaskBarOverlayEnabled(false);
+                        return;
+                      }
+                      if (!taskBarEnabled) {
+                        Alert.alert(
+                          '先开启任务栏与锁屏显示',
+                          '顶部小条和通知卡共用同一份任务数据，请先打开上方开关。',
+                        );
+                        return;
+                      }
+                      setOverlayBusy(true);
+                      void (async () => {
+                        try {
+                          const granted = await taskBarOverlayPermissionGranted();
+                          if (!granted) {
+                            overlayRequestPending.current = true;
+                            Alert.alert(
+                              '需要悬浮窗权限',
+                              '顶部小条会显示在状态栏下方，不会挡住 App 内的主要操作。请允许“显示在其他应用上层”后再回来。',
+                              [
+                                {
+                                  text: '暂不开启',
+                                  style: 'cancel',
+                                  onPress: () => {
+                                    overlayRequestPending.current = false;
+                                  },
+                                },
+                                {
+                                  text: '去授权',
+                                  onPress: () => {
+                                    void requestTaskBarOverlayPermission();
+                                  },
+                                },
+                              ],
+                            );
+                            return;
+                          }
+                          const started = await setTaskBarOverlayEnabled(true);
+                          setOverlayEnabled(started);
+                          if (!started) {
+                            Alert.alert(
+                              '没有开启',
+                              '系统没有允许顶部小条运行，请检查“显示在其他应用上层”权限。',
+                            );
+                          }
+                        } finally {
+                          setOverlayBusy(false);
+                        }
+                      })();
+                    }}
+                    accessibilityLabel="顶部任务小条"
+                    trackColor={{ false: theme.color.border, true: theme.color.accent }}
+                    thumbColor={theme.color.surfaceRaised}
+                  />
+                }
+              />
+              <ListSeparator inset={52} />
+            </>
+          ) : null}
+          {/*
             到点提醒的总开关（spec §4.5）。关掉时不只「以后不排」：已排的本机通知也会被撤掉，
             否则用户关掉之后照样被提醒，那个开关就成了摆设。
           */}
@@ -219,15 +420,21 @@ export function SettingsSectionScreen({
             这里顺便**重排一次**本机排期，
             否则用户改完还要等下次回到前台才生效，看起来就像「改了没用」。
           */}
-          <ListRow
-            leading={<RowIcon name="musical-notes-outline" />}
-            title="默认提醒方式"
-            subtitle={
-              notificationEnabled
-                ? `${describeReminderSound(reminderSound)}（新建日程 / 待办时用它，可逐条改）`
-                : '到点提醒已关闭，这里的选择会在打开后生效'
-            }
-            trailing={
+          <View style={styles.stackedRow}>
+            <View style={styles.stackedRowHeader}>
+              <RowIcon name="musical-notes-outline" />
+              <View style={styles.stackedRowBody}>
+                <Text style={[styles.stackedRowTitle, { color: theme.color.textPrimary }]}>
+                  默认提醒方式
+                </Text>
+                <Text style={[styles.stackedRowSubtitle, { color: theme.color.textSecondary }]}>
+                  {notificationEnabled
+                    ? `${describeReminderSound(reminderSound)}（新建日程 / 待办时用它，可逐条改）`
+                    : '到点提醒已关闭，这里的选择会在打开后生效'}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.segmentedWrap}>
               <SegmentedControl<ReminderSound>
                 label="提醒声音"
                 options={[
@@ -245,8 +452,8 @@ export function SettingsSectionScreen({
                   });
                 }}
               />
-            }
-          />
+            </View>
+          </View>
         </ListGroup>
       ) : null}
 
@@ -279,6 +486,37 @@ export function SettingsSectionScreen({
 
       {section === 'legal' ? (
         <ListGroup>
+          {trainingData ? (
+            <>
+              <ListRow
+                leading={<RowIcon name="sparkles-outline" />}
+                title="帮助改进识别（可选）"
+                subtitle={
+                  trainingData.enabled
+                    ? `已同意：仅使用脱敏后的识别文字，最多保留 ${trainingData.retentionDays} 天`
+                    : '默认关闭；不上传原图，也不会保留原始识别文字'
+                }
+                trailing={
+                  <Switch
+                    value={trainingData.enabled}
+                    disabled={trainingBusy}
+                    onValueChange={(next) => {
+                      setTrainingBusy(true);
+                      void api
+                        .setTrainingData(next)
+                        .then((view) => setTrainingData(view))
+                        .catch(() => Alert.alert('保存失败', '请检查网络后重试。'))
+                        .finally(() => setTrainingBusy(false));
+                    }}
+                    accessibilityLabel="帮助改进识别"
+                    trackColor={{ false: theme.color.border, true: theme.color.accent }}
+                    thumbColor={theme.color.surfaceRaised}
+                  />
+                }
+              />
+              <ListSeparator inset={52} />
+            </>
+          ) : null}
           <ListRow
             leading={<RowIcon name="document-text-outline" />}
             title={LEGAL_DOCS['privacy-policy'].title}
@@ -335,7 +573,7 @@ export function SettingsSectionScreen({
           />
         </ListGroup>
       ) : null}
-      </View>
+      </ScrollView>
     </Screen>
   );
 }
@@ -361,6 +599,15 @@ function RowIcon({ name, tone = 'default' }: { name: string; tone?: 'default' | 
 
 const styles = StyleSheet.create({
   /** 内边距只给内容：页头必须通栏（和「新建日程」一致） */
-  body: { flex: 1, paddingHorizontal: 20, paddingTop: 16 },
+  bodyScroll: { flex: 1 },
+  /** 底部多留一段滚动余量，最下面的提醒方式不会贴住系统手势条。 */
+  body: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 96 },
   rowIcon: { width: 36, alignItems: 'flex-start', justifyContent: 'center' },
+  stackedRow: { paddingHorizontal: 16, paddingVertical: 14 },
+  stackedRowHeader: { flexDirection: 'row', alignItems: 'center' },
+  stackedRowBody: { flex: 1 },
+  stackedRowTitle: { fontSize: 16 },
+  stackedRowSubtitle: { fontSize: 13, marginTop: 3, lineHeight: 18 },
+  /** 三个选项占满整行；不再缩在标题右侧，文字和点击区都不会被挤掉。 */
+  segmentedWrap: { marginTop: 12 },
 });

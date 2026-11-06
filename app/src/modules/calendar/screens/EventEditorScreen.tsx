@@ -3,7 +3,7 @@ import { userFacingError } from '../../../shared/errors';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { EventDetail } from '../../../shared/api';
-import { Card, Screen } from '../../../shared/ui';
+import { Card, Screen, showToast } from '../../../shared/ui';
 import { WheelLayer } from '../components/WheelLayer';
 import { WheelDatePicker } from '../components/WheelDatePicker';
 import { WheelTimePicker } from '../components/WheelTimePicker';
@@ -14,15 +14,20 @@ import {
   FormRowValue,
   FormRowText,
   FormTextArea,
+  LargeSegmentedControl,
 } from '../../../shared/ui';
 import { useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
 import {
   buildCreatePayload,
   buildUpdatePayload,
+  addMinutes,
+  DEFAULT_EVENT_END_TIME,
   DEFAULT_EVENT_TIME,
+  durationBetween,
   draftFromEvent,
   emptyDraft,
   eventDateKey,
+  switchSnapshotFromEventDraft,
   validateDraft,
   type EventDraft,
 } from '../domain/eventDraft';
@@ -37,6 +42,7 @@ import {
   type ReminderSound,
 } from '../../notifications';
 import type {
+  EditorSwitchSnapshot,
   PlaceSelection,
   RecurrenceSelection,
   ReminderSelection,
@@ -47,6 +53,7 @@ import type {
  * 日程与待办两个编辑页共用同一套「version 变了才算改过」的语义。
  */
 export type {
+  EditorSwitchSnapshot,
   PlaceSelection,
   RecurrenceSelection,
   ReminderSelection,
@@ -72,6 +79,9 @@ export function EventEditorScreen({
   onPickLocation,
   onPickRecurrence,
   onPickReminder,
+  initialReminderSound,
+  showKindSwitch = false,
+  onSwitchToTask,
   onDraftSaved,
   onCancel,
   onSaved,
@@ -93,10 +103,16 @@ export function EventEditorScreen({
   /** 第二个参数是日程自己的日期（编辑时可能与列表页选中的那天不同） */
   onPickRecurrence: (current: Recurrence, startDateKey: string) => void;
   onPickReminder: (current: { minutes: number[]; sound: ReminderSound }) => void;
+  /** 新建页从「待办」切回来时带回的提醒声音档位 */
+  initialReminderSound?: ReminderSound;
+  /** 只有新建时才显示「日程 / 待办」切换；编辑已有内容不显示 */
+  showKindSwitch?: boolean;
+  onSwitchToTask?: (snapshot: EditorSwitchSnapshot) => void;
   /** 草稿模式下的「保存」：把改好的草稿与日期交回调用方（不落库） */
   onDraftSaved?: (draft: EventDraft, dateKey: string) => void;
   onCancel: () => void;
-  onSaved: () => void;
+  /** 保存成功后的收尾；带日期时日历会回到刚刚保存的那一天 */
+  onSaved: (dateKey?: string) => void;
 }) {
   const theme = useAppTheme();
   const { api, reminders } = useRuntime();
@@ -121,11 +137,13 @@ export function EventEditorScreen({
    * 新建日程时初值是「我的 → 偏好」里的默认档；编辑已有日程时由服务端给的档位覆盖。
    * 存两份（当前值 + 初始值）是为了「没改过就不多发一次 PUT」——只改档位没改提前量也算改过。
    */
-  const [reminderSound, setReminderSound] = useState<ReminderSound>(defaultReminderSound);
-  const [initialReminderSound, setInitialReminderSound] =
-    useState<ReminderSound>(defaultReminderSound);
-  /** 正在用滚轮改哪个时间（null = 没开选择层）；`draft` 是滚轮里的临时值 */
-  const [timePickerOpen, setTimePickerOpen] = useState(false);
+  const [reminderSound, setReminderSound] = useState<ReminderSound>(
+    initialReminderSound ?? defaultReminderSound,
+  );
+  const [initialReminderSoundState, setInitialReminderSoundState] =
+    useState<ReminderSound>(initialReminderSound ?? defaultReminderSound);
+  /** 正在用滚轮改哪个时间（null = 没开选择层）；`timeDraft` 是滚轮里的临时值 */
+  const [timePickerField, setTimePickerField] = useState<'start' | 'end' | null>(null);
   const [timeDraft, setTimeDraft] = useState(DEFAULT_EVENT_TIME);
   /** 草稿模式下日期也能在页内改（新建日程时日期来自日历，没有这一步） */
   const [datePickerOpen, setDatePickerOpen] = useState(false);
@@ -165,7 +183,7 @@ export function EventEditorScreen({
           const minutes = normalizeReminders(reminders.map((item) => item.minutesBefore));
           const sound = parseReminderSound(reminders[0]?.sound);
           setInitialReminders(minutes);
-          setInitialReminderSound(sound);
+          setInitialReminderSoundState(sound);
           setReminderSound(sound);
           setDraft((current) => ({ ...current, reminders: minutes }));
         } catch {
@@ -224,14 +242,24 @@ export function EventEditorScreen({
     setDraft((current) => ({ ...current, ...next }));
     setError(null);
   };
-  const openTimePicker = () => {
-    setTimeDraft(draft.time);
-    setTimePickerOpen(true);
+  const openTimePicker = (field: 'start' | 'end') => {
+    setTimeDraft(field === 'start' ? draft.time : draft.endTime);
+    setTimePickerField(field);
   };
   const confirmTimePicker = () => {
-    // 日程只有一个时间（spec §4.1.2）：拨一次就够
-    patch({ time: timeDraft });
-    setTimePickerOpen(false);
+    if (timePickerField === 'start') {
+      patch({
+        time: timeDraft,
+        // 用户把开始时间拨到结束时间之后时，顺手把结束时间顺延一小时，少弹一次错误。
+        endTime:
+          durationBetween(timeDraft, draft.endTime) > 0
+            ? draft.endTime
+            : addMinutes(timeDraft, 60),
+      });
+    } else if (timePickerField === 'end') {
+      patch({ endTime: timeDraft });
+    }
+    setTimePickerField(null);
   };
   const openDatePicker = () => {
     setDateDraft(dateKey);
@@ -282,10 +310,10 @@ export function EventEditorScreen({
           minutes: draft.reminders,
           initialMinutes: initialReminders,
           sound: reminderSound,
-          initialSound: initialReminderSound,
+          initialSound: initialReminderSoundState,
         });
         setInitialReminders(normalizeReminders(draft.reminders));
-        setInitialReminderSound(reminderSound);
+        setInitialReminderSoundState(reminderSound);
       } catch (cause) {
         // 日程已经存下了。这里**不能**当作「保存失败」整条回滚口吻提示，
         // 也不能直接返回列表（用户看不到问题、更没法重试）
@@ -309,7 +337,8 @@ export function EventEditorScreen({
         // 设置存下了、但通知响不了，必须说清楚，否则用户会以为「提醒坏了」
         Alert.alert('提醒不会响', '系统还没允许本应用发送通知，请在系统设置里打开通知权限。');
       }
-      onSaved();
+      showToast(isEdit ? '日程已更新' : '日程已添加');
+      onSaved(dateKey);
     } catch (cause) {
       setError(userFacingError(cause, '保存失败'));
     } finally {
@@ -349,6 +378,7 @@ export function EventEditorScreen({
          * 重排一次即可 —— 服务端已经不再返回它，对齐时本机那条会被取消。
          */
         await refreshLocalReminders({ api, scheduler: reminders, enabled: notificationEnabled });
+        showToast('日程已删除');
         onSaved();
       } catch (cause) {
         setError(userFacingError(cause, '删除失败'));
@@ -385,13 +415,32 @@ export function EventEditorScreen({
   return (
     <Screen>
       <EditorHeader
-        title={draftMode ? '编辑草稿' : isEdit ? '编辑日程' : '新建日程'}
+        title={draftMode ? '编辑草稿' : isEdit ? '编辑日程' : showKindSwitch ? '新建安排' : '新建日程'}
         // 取消就是取消：不再弹「放弃未保存的修改？」——用户已经明确表达要退出了
         onCancel={onCancel}
         onSave={() => void save()}
         saving={saving}
         saveLabel={draftMode ? '完成' : '保存'}
       />
+
+      {showKindSwitch ? (
+        <View style={{ paddingHorizontal: theme.spacing.md, paddingTop: theme.spacing.sm }}>
+          <LargeSegmentedControl
+            label="安排类型"
+            options={[
+              { value: 'EVENT', label: '日程' },
+              { value: 'TASK', label: '待办' },
+            ]}
+            value="EVENT"
+            disabled={saving}
+            onChange={(next) => {
+              if (next === 'TASK') {
+                onSwitchToTask?.(switchSnapshotFromEventDraft(draft, dateKey, reminderSound));
+              }
+            }}
+          />
+        </View>
+      ) : null}
 
       <ScrollView
         contentContainerStyle={{ padding: theme.spacing.md, paddingBottom: theme.spacing.xxl }}
@@ -410,20 +459,20 @@ export function EventEditorScreen({
 
         <View style={{ marginTop: theme.spacing.md }}>
           <Card>
-            {/* 新建日程时日期来自日历（少一个控件少一次误操作）；草稿模式没有那一步，所以日期可点 */}
-            <FormRow label="日期" onPress={draftMode ? openDatePicker : undefined}>
-              {draftMode ? (
-                <FormRowValue text={dateKey} placeholder="选择日期" />
-              ) : (
-                <Text style={{ color: theme.color.textPrimary, fontSize: 15 }}>{dateKey}</Text>
-              )}
+            {/* 日期始终可改：从右下角「+」进来时，用户不必先退回日历再选日期 */}
+            <FormRow label="日期" onPress={openDatePicker}>
+              <FormRowValue text={dateKey} placeholder="选择日期" />
             </FormRow>
 
             {/* 时间用滚轮选：手打 HH:mm 在手机上又慢又容易错（spec §4.1.5）。
                 没有「全天」开关：日程只有一个时间点，**必须拨到一个明确的时刻**，
                 00:00 就是凌晨零点（2026-10-01 起不再表示「只说了哪一天」）。 */}
-            <FormRow label="时间" onPress={openTimePicker}>
+            <FormRow label="开始时间" onPress={() => openTimePicker('start')}>
               <FormRowValue text={draft.time} placeholder="09:00" />
+            </FormRow>
+
+            <FormRow label="结束时间" onPress={() => openTimePicker('end')}>
+              <FormRowValue text={draft.endTime} placeholder={DEFAULT_EVENT_END_TIME} />
             </FormRow>
 
             {/* 重复与提醒各进一个二级页面：字段多、还要返回栈（spec §4.1.5） */}
@@ -530,17 +579,17 @@ export function EventEditorScreen({
       </ScrollView>
 
       {/* 时间选择层：贴在底部，不遮全屏，拨滚轮时还能看到上面的表单（spec §7.6.7） */}
-      {timePickerOpen ? (
+      {timePickerField ? (
         <WheelLayer
-          title="时间"
-          onCancel={() => setTimePickerOpen(false)}
+          title={timePickerField === 'start' ? '开始时间' : '结束时间'}
+          onCancel={() => setTimePickerField(null)}
           onConfirm={confirmTimePicker}
         >
           <WheelTimePicker value={timeDraft} onChange={setTimeDraft} />
         </WheelLayer>
       ) : null}
 
-      {/* 草稿模式才会用到：在编辑页里直接改这条草稿的日期 */}
+      {/* 在编辑页里直接改日期，不用退出去重新点日历 */}
       {datePickerOpen ? (
         <WheelLayer
           title="日期"

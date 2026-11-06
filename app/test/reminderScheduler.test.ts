@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { createMemoryReminderIdStore, reminderTargetKey } from '../src/modules/notifications/reminderStore';
+import {
+  createMemoryReminderIdStore,
+  reminderTargetKey,
+  snoozeTargetKey,
+} from '../src/modules/notifications/reminderStore';
 import {
   createNoopReminderScheduler,
   createReminderScheduler,
@@ -70,6 +74,7 @@ describe('本地提醒排期', () => {
       '2026-09-28T02:00:00.000Z',
     ]);
     expect(scheduled[0]!.title).toBe('周会');
+    expect(scheduled[0]!.categoryIdentifier).toBe('chronoflow.reminder.event');
     expect(scheduled[0]!.data).toMatchObject({ targetType: 'EVENT', targetId: 12, minutesBefore: 15 });
     // 正文里要写清「几点、在哪」：通知中心里看不到日程卡片
     expect(scheduled[0]!.body).toBe('9 月 28 日 10:00 · 会议室 A');
@@ -233,6 +238,104 @@ describe('本地提醒排期', () => {
     const scheduler = createNoopReminderScheduler();
     await expect(scheduler.sync(request, NOW)).resolves.toMatchObject({ scheduled: 0 });
     await expect(scheduler.cancel('EVENT', 12)).resolves.toBeUndefined();
+    await expect(
+      scheduler.snooze({
+        targetType: 'EVENT',
+        targetId: 12,
+        title: '周会',
+        body: '9 月 28 日 10:00',
+        sound: 'default',
+        data: { targetType: 'EVENT', targetId: 12 },
+      }),
+    ).resolves.toMatchObject({ scheduled: 0 });
+  });
+
+  it('稍后 10 分钟：按原通知重排，并单独记账', async () => {
+    const { gateway, scheduled } = createFakeGateway();
+    const store = createMemoryReminderIdStore();
+    const scheduler = createReminderScheduler({ gateway, store });
+    const data = {
+      targetType: 'EVENT',
+      targetId: 12,
+      occurrenceDate: '2026-09-28',
+      sound: 'alarm',
+    };
+
+    const result = await scheduler.snooze(
+      {
+        targetType: 'EVENT',
+        targetId: 12,
+        title: '周会',
+        body: '9 月 28 日 10:00 · 会议室 A',
+        sound: 'alarm',
+        data,
+      },
+      NOW,
+    );
+
+    expect(result).toEqual({ scheduled: 1, permissionDenied: false, failed: false });
+    expect(scheduled[0]!.at.toISOString()).toBe('2026-09-28T00:10:00.000Z');
+    expect(scheduled[0]).toMatchObject({
+      title: '周会',
+      body: '9 月 28 日 10:00 · 会议室 A',
+      sound: 'alarm',
+      categoryIdentifier: 'chronoflow.reminder.event',
+      data,
+    });
+    expect(await store.read()).toEqual({ [snoozeTargetKey('EVENT', 12)]: ['notif-1'] });
+  });
+
+  it('前台重排保留稍后提醒；目标消失或关闭通知时才撤掉', async () => {
+    const { gateway, cancelled } = createFakeGateway();
+    const store = createMemoryReminderIdStore();
+    const scheduler = createReminderScheduler({ gateway, store });
+
+    await scheduler.snooze(
+      {
+        targetType: 'EVENT',
+        targetId: 12,
+        title: '周会',
+        body: '9 月 28 日 10:00',
+        sound: 'default',
+        data: { targetType: 'EVENT', targetId: 12 },
+      },
+      NOW,
+    );
+    await scheduler.sync(request, NOW);
+    expect(Object.keys(await store.read()).sort()).toEqual(['EVENT:12', 'snooze:EVENT:12']);
+
+    // 目标仍在服务端清单里：稍后提醒不能被前台重排误删
+    await scheduler.reconcile([request], NOW);
+    expect(Object.keys(await store.read()).sort()).toEqual(['EVENT:12', 'snooze:EVENT:12']);
+
+    // 关掉通知 / 日程被删：空清单意味着一个都不留
+    await scheduler.reconcile([], NOW);
+    expect(await store.read()).toEqual({});
+    expect(cancelled).toContainEqual(['notif-1']);
+  });
+
+  it('待办完成后同时清掉普通提醒和稍后提醒', async () => {
+    const { gateway, cancelled } = createFakeGateway();
+    const store = createMemoryReminderIdStore();
+    const scheduler = createReminderScheduler({ gateway, store });
+    const taskRequest = { ...request, targetType: 'TASK' as const, targetId: 7, minutesBefore: [0] };
+
+    await scheduler.sync(taskRequest, NOW);
+    await scheduler.snooze(
+      {
+        targetType: 'TASK',
+        targetId: 7,
+        title: '交作业',
+        body: '今天 23:00',
+        sound: 'default',
+        data: { targetType: 'TASK', targetId: 7 },
+      },
+      NOW,
+    );
+    await scheduler.cancel('TASK', 7);
+
+    expect(cancelled.at(-1)).toEqual(['notif-1', 'notif-2']);
+    expect(await store.read()).toEqual({});
   });
 
   /**

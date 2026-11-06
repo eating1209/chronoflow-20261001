@@ -1,4 +1,4 @@
-import { routeFromResponse, type NotificationRoute } from './route';
+import { tapFromResponse, type NotificationTap } from './route';
 import { localNotificationsAvailable } from '../../shared/notifications/availability';
 
 /**
@@ -12,18 +12,29 @@ import { localNotificationsAvailable } from '../../shared/notifications/availabi
  * 与其它通知模块一样用动态 import：Web 预览 / 缺原生模块时不影响 App 启动。
  */
 export async function subscribeNotificationResponses(
-  handler: (route: NotificationRoute) => void,
+  handler: (tap: NotificationTap) => void,
 ): Promise<() => void> {
   // Expo Go（Android）里连 import 都会抛（见 availability.ts）：直接当「没有通知」处理
   if (!localNotificationsAvailable()) {
     return () => undefined;
   }
   const Notifications = await import('expo-notifications');
+  const seen = new Set<string>();
   const emit = (response: unknown) => {
-    const route = routeFromResponse(response as never);
-    if (route) {
-      handler(route);
+    const tap = tapFromResponse(response as never);
+    if (!tap) {
+      return;
     }
+    // 冷启动时 getLastNotificationResponseAsync 与实时监听可能拿到同一次点击；
+    // 不去重的话「稍后」会被排两条，「完成」也会重复请求。
+    if (tap.notificationId) {
+      const key = `${tap.notificationId}:${tap.actionIdentifier}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+    }
+    handler(tap);
   };
   const subscription = Notifications.addNotificationResponseReceivedListener(emit);
   try {

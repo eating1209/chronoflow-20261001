@@ -10,6 +10,22 @@ import {
 } from '../src/modules/tasks/domain/taskDraft';
 import type { Task } from '../src/shared/api';
 
+const task: Task = {
+  id: 7,
+  calendarId: 1,
+  parentTaskId: null,
+  eventId: null,
+  eventTitle: null,
+  title: '交周报',
+  description: null,
+  dueAt: '2026-10-09T10:00:00Z',
+  status: 'TODO',
+  completedAt: null,
+  priority: 'NORMAL',
+  rrule: 'FREQ=WEEKLY;BYDAY=FR',
+  sortOrder: 0,
+};
+
 /**
  * 待办的重复规则与提醒（spec §4.1.2）。
  *
@@ -17,22 +33,6 @@ import type { Task } from '../src/shared/api';
  * 而提醒不走 task 行，编辑页要单独拉一次 `GET /reminders`。
  */
 describe('待办的重复与提醒', () => {
-  const task: Task = {
-    id: 7,
-    calendarId: 1,
-    parentTaskId: null,
-    eventId: null,
-    eventTitle: null,
-    title: '交周报',
-    description: null,
-    dueAt: '2026-10-09T10:00:00Z',
-    status: 'TODO',
-    completedAt: null,
-    priority: 'NORMAL',
-    rrule: 'FREQ=WEEKLY;BYDAY=FR',
-    sortOrder: 0,
-  };
-
   it('回填：服务端的 rrule 能还原到草稿，编辑一次不会把它抹掉', () => {
     const draft = draftFromTask(task, '2026-10-05');
     expect(draft.rrule).toBe('FREQ=WEEKLY;BYDAY=FR');
@@ -54,6 +54,57 @@ describe('待办的重复与提醒', () => {
 });
 
 describe('新建待办草稿', () => {
+  it('地点、坐标与详细地址会进入请求体，也能从已有待办回填', () => {
+    const draft = {
+      ...emptyTaskDraft('2026-10-05'),
+      title: '交材料',
+      place: {
+        poiId: 'poi-1',
+        name: '行政楼',
+        address: '海大路 1 号',
+        latitude: 30.123,
+        longitude: 122.456,
+      },
+      locationDetail: '305 办公室',
+    };
+
+    expect(buildCreateTaskPayload(draft)).toMatchObject({
+      locationName: '行政楼',
+      locationAddress: '海大路 1 号',
+      locationDetail: '305 办公室',
+      latitude: 30.123,
+      longitude: 122.456,
+      poiId: 'poi-1',
+    });
+
+    const restored = draftFromTask(
+      {
+        ...task,
+        locationName: '行政楼',
+        locationAddress: '海大路 1 号',
+        locationDetail: '305 办公室',
+        latitude: 30.123,
+        longitude: 122.456,
+        poiId: 'poi-1',
+      },
+      '2026-10-05',
+    );
+    expect(restored.place).toMatchObject({ name: '行政楼', latitude: 30.123 });
+    expect(restored.locationDetail).toBe('305 办公室');
+  });
+
+  it('编辑时清除地点会提交空串，清空才不会在 PATCH 里变成“不修改”', () => {
+    const draft = { ...emptyTaskDraft('2026-10-05'), title: '交材料' };
+    expect(buildUpdateTaskPayload(draft)).toMatchObject({
+      locationName: '',
+      locationAddress: '',
+      locationDetail: '',
+      poiId: '',
+      latitude: null,
+      longitude: null,
+    });
+  });
+
   it('默认不设截止时间，归入「待安排」', () => {
     const draft = emptyTaskDraft('2026-10-05');
     expect(draft.hasDue).toBe(false);

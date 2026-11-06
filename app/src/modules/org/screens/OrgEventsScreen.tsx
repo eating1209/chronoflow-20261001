@@ -23,7 +23,7 @@ import {
   buildMonthGrid,
   dateKeyToIso,
   dayHeading,
-  formatEventTime,
+  formatEventTimeRange,
   localDateKey,
   locationLabel,
 } from '../../calendar/pure';
@@ -218,7 +218,7 @@ export function OrgEventsScreen({
                   </Text>
                   <Text style={{ color: theme.color.textSecondary, fontSize: 13, marginTop: 2 }}>
                     {[
-                      formatEventTime(item.at, item.timezone || APP_TIMEZONE),
+                      formatEventTimeRange(item, item.timezone || APP_TIMEZONE),
                       locationLabel(item.location, item.locationDetail),
                     ]
                       .filter(Boolean)

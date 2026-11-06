@@ -4,8 +4,15 @@ import {
   reminderNotificationBody,
   type ReminderOccurrenceInput,
 } from './domain/reminderSchedule';
-import { reminderTargetKey, type ReminderIdStore, type ReminderTargetType } from './reminderStore';
+import {
+  reminderTargetKey,
+  reminderTargetKeyFromSnooze,
+  snoozeTargetKey,
+  type ReminderIdStore,
+  type ReminderTargetType,
+} from './reminderStore';
 import { DEFAULT_REMINDER_SOUND, parseReminderSound, type ReminderSound } from '../../shared/notifications';
+import { categoryIdFor, SNOOZE_MINUTES } from './reminderActions';
 
 /** 交给原生层的一条本地通知。 */
 export interface ScheduledNotification {
@@ -14,6 +21,8 @@ export interface ScheduledNotification {
   body: string;
   /** 这条通知的档位（静音 / 消息提醒 / 闹钟）：按日程配，不再看全局设置 */
   sound: ReminderSound;
+  /** 系统通知分类：决定通知上出现哪些动作按钮 */
+  categoryIdentifier: string;
   /** 点击通知时要跳到哪里（统一路由用，spec §4.5） */
   data: Record<string, unknown>;
 }
@@ -67,6 +76,18 @@ export interface ReminderScheduler {
   reconcile: (requests: ReminderRequest[], now?: Date) => Promise<ReminderSyncResult>;
   /** 日程/待办被删除时调用 */
   cancel: (targetType: ReminderTargetType, targetId: number) => Promise<void>;
+  /** 用户点「稍后」：按原通知内容在 10 分钟后重新排一条 */
+  snooze: (request: ReminderSnoozeRequest, now?: Date) => Promise<ReminderSyncResult>;
+}
+
+export interface ReminderSnoozeRequest {
+  targetType: ReminderTargetType;
+  targetId: number;
+  title: string;
+  body: string;
+  sound: ReminderSound;
+  /** 原通知的 data，保留日程出现日期与目标信息 */
+  data: Record<string, unknown>;
 }
 
 /**
@@ -126,6 +147,7 @@ export function createReminderScheduler({
                     location: request.location ?? null,
                   }),
                   sound,
+                  categoryIdentifier: categoryIdFor(request.targetType),
                   data: {
                     targetType: request.targetType,
                     targetId: request.targetId,
@@ -166,7 +188,8 @@ export function createReminderScheduler({
       const map = await store.read();
       // 先清掉「这批里没有」的目标：用户可能在别的设备上把提醒删了
       for (const key of Object.keys(map)) {
-        if (wanted.has(key)) {
+        const snoozedTarget = reminderTargetKeyFromSnooze(key);
+        if (snoozedTarget ? wanted.has(snoozedTarget) : wanted.has(key)) {
           continue;
         }
         try {
@@ -195,18 +218,73 @@ export function createReminderScheduler({
 
   const cancel = async (targetType: ReminderTargetType, targetId: number): Promise<void> => {
       const key = reminderTargetKey(targetType, targetId);
+      const snoozeKey = snoozeTargetKey(targetType, targetId);
       const map = await store.read();
-      const ids = map[key];
-      if (!ids || ids.length === 0) {
+      const ids = [...(map[key] ?? []), ...(map[snoozeKey] ?? [])];
+      if (ids.length === 0) {
+        if (key in map || snoozeKey in map) {
+          delete map[key];
+          delete map[snoozeKey];
+          await store.write(map);
+        }
         return;
       }
       // 先真的取消掉，再抹掉记录：反过来的话取消失败就再也找不到这批 id 了
       await gateway.cancelAll(ids);
       delete map[key];
+      delete map[snoozeKey];
       await store.write(map);
   };
 
-  return { sync, reconcile, cancel };
+  const snooze = async (
+    request: ReminderSnoozeRequest,
+    now = new Date(),
+  ): Promise<ReminderSyncResult> => {
+      const result: ReminderSyncResult = { scheduled: 0, permissionDenied: false, failed: false };
+      let allowed = false;
+      try {
+        allowed = await gateway.ensurePermission();
+      } catch {
+        result.failed = true;
+      }
+      if (!allowed) {
+        result.permissionDenied = true;
+        return result;
+      }
+
+      const key = snoozeTargetKey(request.targetType, request.targetId);
+      const map = await store.read();
+      // 重复点「稍后」只保留最新的一条，避免用户收到两条相同提醒
+      try {
+        await gateway.cancelAll(map[key] ?? []);
+      } catch {
+        // 旧的那条最多再响一次，不应该挡住这次稍后提醒
+      }
+      delete map[key];
+
+      try {
+        const id = await gateway.schedule({
+          at: new Date(now.getTime() + SNOOZE_MINUTES * 60 * 1000),
+          title: request.title,
+          body: request.body,
+          sound: parseReminderSound(request.sound),
+          categoryIdentifier: categoryIdFor(request.targetType),
+          data: request.data,
+        });
+        map[key] = [id];
+        result.scheduled = 1;
+      } catch {
+        result.failed = true;
+      }
+      try {
+        await store.write(map);
+      } catch {
+        result.failed = true;
+      }
+      return result;
+  };
+
+  return { sync, reconcile, cancel, snooze };
 }
 
 /** 本机没有通知模块（Web 预览 / 缺原生模块的构建）时的降级：主流程照常，只是排不了提醒。 */
@@ -220,6 +298,9 @@ export function createNoopReminderScheduler(): ReminderScheduler {
     },
     async cancel() {
       // 没有本机排期，也就没有要取消的东西
+    },
+    async snooze() {
+      return { scheduled: 0, permissionDenied: false, failed: true };
     },
   };
 }

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { routeFromNotificationData, routeFromResponse } from '../src/modules/notifications/route';
+import {
+  routeFromNotificationData,
+  routeFromResponse,
+  tapFromResponse,
+} from '../src/modules/notifications/route';
+import { SNOOZE_ACTION_ID } from '../src/modules/notifications/reminderActions';
 
 /**
  * 通知点击的路由解析（spec §4.5）。
@@ -49,5 +54,32 @@ describe('通知点击路由', () => {
       }),
     ).toEqual({ kind: 'TASK', taskId: 5 });
     expect(routeFromResponse(null)).toBeNull();
+  });
+
+  it('动作按钮的回执同时带回原文，稍后提醒才能按原样重排', () => {
+    expect(
+      tapFromResponse({
+        actionIdentifier: SNOOZE_ACTION_ID,
+        notification: {
+          request: {
+            identifier: 'local-123',
+            content: {
+              title: '周会',
+              body: '9 月 28 日 10:00 · 会议室 A',
+              data: { targetType: 'EVENT', targetId: 12, sound: 'alarm', occurrenceDate: '2026-09-28' },
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      route: { kind: 'EVENT', eventId: 12, occurrenceDate: '2026-09-28' },
+      actionIdentifier: SNOOZE_ACTION_ID,
+      notificationId: 'local-123',
+      title: '周会',
+      body: '9 月 28 日 10:00 · 会议室 A',
+      sound: 'alarm',
+      data: { targetType: 'EVENT', targetId: 12, sound: 'alarm', occurrenceDate: '2026-09-28' },
+    });
+    expect(tapFromResponse(null)).toBeNull();
   });
 });

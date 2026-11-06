@@ -40,10 +40,11 @@ export function resultSubtitle(item: SearchResultItem, fallback: string = APP_TI
 
   if (item.type === 'TASK') {
     const prefix = item.status === 'DONE' ? '已完成 · ' : '';
+    const place = item.locationName ? ` · ${item.locationName}` : '';
     if (!item.dueAt) {
-      return `${prefix}待安排`;
+      return `${prefix}待安排${place}`;
     }
-    return `${prefix}截止 ${formatDayTime(item.dueAt, timeZone)}`;
+    return `${prefix}截止 ${formatDayTime(item.dueAt, timeZone)}${place}`;
   }
 
   if (!item.at) {

@@ -82,7 +82,8 @@ export function PrivacyConsentScreen({
             { borderColor: theme.color.border, borderRadius: theme.radius.card },
           ]}
         >
-          <SummaryLine text="我们只收集实现功能所必需的信息：手机号码（登录）、您填写的日程与待办、您主动选择的地点与图片。" />
+          <SummaryLine text="我们只收集实现功能所必需的信息：手机号码（登录）、您填写的日程与待办、您主动选择的地点与图片，以及使用语音输入时主动录制的语音。" />
+          <SummaryLine text="语音输入需要麦克风权限和联网；录音只用于这次转写，转完立即删除，不保存、不用于训练。" />
           <SummaryLine text="不开启定位、相册权限时，您仍可手工输入地点、新建日程与待办，基本功能不受影响。" />
           <SummaryLine text="本应用不含广告、不含统计分析 SDK，也不提供个性化推荐或定向推送。" />
           <SummaryLine text="您可以随时在「我的 → 隐私与合规 → 账号注销」注销账号并删除个人信息。" />

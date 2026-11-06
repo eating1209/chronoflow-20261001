@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { askPermission } from '../../shared/permission';
 import { channelIdFor, DEFAULT_REMINDER_SOUND, parseReminderSound, type ReminderSound } from '../../shared/notifications';
 import type { NotificationGateway, ScheduledNotification } from './scheduler';
+import { actionsFor, categoryIdFor, REMINDER_CATEGORY_ID } from './reminderActions';
 
 /**
  * `expo-notifications` 的适配层（spec §4.5：到点提醒走 App 本地通知，不经过服务端推送）。
@@ -14,6 +15,17 @@ import type { NotificationGateway, ScheduledNotification } from './scheduler';
 export async function createExpoNotificationGateway(): Promise<NotificationGateway> {
   const Notifications = await import('expo-notifications');
 
+  // 分类没注册成功时通知仍可正常弹出，只是不显示动作按钮；不要因此拖垮整个 App。
+  try {
+    await Promise.all(
+      (Object.keys(REMINDER_CATEGORY_ID) as Array<keyof typeof REMINDER_CATEGORY_ID>).map((targetType) =>
+        Notifications.setNotificationCategoryAsync(categoryIdFor(targetType), actionsFor(targetType)),
+      ),
+    );
+  } catch {
+    // 下一次创建网关（例如重启 App）会重试
+  }
+
   /**
    * 前台也要弹。
    *
@@ -22,7 +34,8 @@ export async function createExpoNotificationGateway(): Promise<NotificationGatew
    */
   Notifications.setNotificationHandler({
     handleNotification: async (notification: unknown) => ({
-      shouldShowBanner: true,
+      // 任务总览是常驻状态卡，不是打扰用户的提醒：前台只进通知列表，不弹横幅。
+      shouldShowBanner: !isTaskBarNotification(notification),
       shouldShowList: true,
       /*
        * 前台也要响：档位对前台同样生效，否则「选了闹钟、结果开着 App 就不响」，
@@ -103,7 +116,19 @@ export async function createExpoNotificationGateway(): Promise<NotificationGatew
         content: {
           title: notification.title,
           body: notification.body,
+          categoryIdentifier: notification.categoryIdentifier,
           data: notification.data,
+          /**
+           * 渠道负责 Android 8+ 的声音和免打扰，priority 负责让系统把这条件提醒
+           * 当作会打扰用户的提醒，而不是一条默默躺在通知栏里的普通消息。
+           * 静音档仍然进高优先级渠道，但内容不响不震，只在通知栏和锁屏出现。
+           */
+          priority:
+            sound === 'alarm'
+              ? Notifications.AndroidNotificationPriority.MAX
+              : Notifications.AndroidNotificationPriority.HIGH,
+          // iOS 没有 Android 渠道；timeSensitive 让闹钟档在专注模式下也能亮屏提示。
+          interruptionLevel: sound === 'alarm' ? 'timeSensitive' : 'active',
           /*
            * 声音交给渠道设置（Android 8+）：这里传 true/false 反而会覆盖渠道的声音。
            * iOS 没有渠道，必须在这里给 —— 静音档给 null，另外两档用系统默认音。
@@ -128,4 +153,10 @@ function soundOfNotification(notification: unknown): ReminderSound {
     ?.content?.data;
   const raw = (data as { sound?: unknown } | undefined)?.sound;
   return parseReminderSound(raw);
+}
+
+function isTaskBarNotification(notification: unknown): boolean {
+  const data = (notification as { request?: { content?: { data?: unknown } } } | null)?.request
+    ?.content?.data;
+  return (data as { kind?: unknown } | undefined)?.kind === 'taskbar-overview';
 }

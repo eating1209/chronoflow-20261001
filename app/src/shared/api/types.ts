@@ -92,6 +92,8 @@ export interface EventOccurrence {
   eventId: number;
   calendarId: number;
   title: string;
+  /** 备注；列表行内展开时直接展示，不再为每条日程单独请求详情 */
+  description?: string | null;
   /** 地点已结构化（spec §5.9）；列表只展示名称，地址留给详情与导航 */
   locationName: string | null;
   locationAddress: string | null;
@@ -99,10 +101,24 @@ export interface EventOccurrence {
   locationDetail: string | null;
   /** 日程只有一个时间点（spec §4.1.2） */
   at: string;
+  /** 时长（分钟）；旧服务端没有这个字段时按 60 分钟显示。 */
+  durationMinutes?: number | null;
   timezone: string;
   recurring: boolean;
   occurrenceDate: string | null;
   modified: boolean;
+  /** 当前身份是否已勾完成；重复日程按每一次出现分别记录 */
+  done: boolean;
+  completedAt?: string | null;
+}
+
+/** POST /events/{id}/complete 的返回。 */
+export interface EventCompletion {
+  eventId: number;
+  /** 重复日程是这一次的本地日期；非重复日程为 null */
+  occurrenceDate: string | null;
+  done: boolean;
+  completedAt?: string | null;
 }
 
 export type EventAvailability = 'BUSY' | 'FREE';
@@ -125,6 +141,8 @@ export interface EventDetail {
   coordinateSystem: string | null;
   /** 日程只有一个时间点（spec §4.1.2） */
   at: string;
+  /** 时长（分钟）。App 用「开始时间 + 时长」得到结束时间。 */
+  durationMinutes?: number | null;
   timezone: string;
   rrule: string | null;
   status: EventStatus;
@@ -169,6 +187,14 @@ export interface Task {
   eventTitle: string | null;
   title: string;
   description: string | null;
+  /** 结构化地点（spec §5.9）：待办和日程一样可以记录去哪儿交材料 / 取东西 */
+  locationName?: string | null;
+  locationAddress?: string | null;
+  locationDetail?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  poiId?: string | null;
+  coordinateSystem?: string | null;
   dueAt: string | null;
   status: 'TODO' | 'DONE' | 'CANCELLED';
   completedAt: string | null;
@@ -280,6 +306,17 @@ export interface ParsedEventItem {
   timezone?: string | null;
   locationName?: string | null;
   description?: string | null;
+}
+
+/**
+ * 语音转文字的结果（`POST /ai/transcribe`，spec §4.1.9.1）。
+ *
+ * <p>服务端只回文字与语言；音频只在内存里转发给百炼，不落盘、不保存。
+ * `language` 可能为空（上游没给），界面不要拿它做判断。
+ */
+export interface TranscriptionResult {
+  text: string;
+  language?: string | null;
 }
 
 export interface OrgEvent {

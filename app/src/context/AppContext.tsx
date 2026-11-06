@@ -63,6 +63,9 @@ interface AppContextValue {
   /** 到点提醒的总开关（本机偏好，spec §4.5） */
   notificationEnabled: boolean;
   setNotificationEnabled: (enabled: boolean) => void;
+  /** 通知栏 / 锁屏常驻任务总览（本机偏好） */
+  taskBarEnabled: boolean;
+  setTaskBarEnabled: (enabled: boolean) => void;
   /** 提醒声音档位（本机偏好，spec §4.5）：静音 / 系统提示音 / 闹钟式 */
   reminderSound: ReminderSound;
   /** 改声音档位：写本机偏好，并让调用方触发一次提醒重排（换渠道才会换声音） */
@@ -104,6 +107,10 @@ export function AppProvider({
   const [notificationEnabled, setNotificationEnabledState] = useState(
     DEFAULT_NOTIFICATION_PREFS.enabled,
   );
+  /** 通知栏 / 锁屏任务总览。默认开启，权限被拒后由 App 主动写回 false。 */
+  const [taskBarEnabled, setTaskBarEnabledState] = useState(
+    DEFAULT_NOTIFICATION_PREFS.taskBarEnabled,
+  );
   /** 提醒声音档位。和总开关一起存本机（spec §4.5）；默认「系统提示音」。 */
   const [reminderSound, setReminderSoundState] = useState<ReminderSound>(
     DEFAULT_NOTIFICATION_PREFS.sound,
@@ -121,6 +128,7 @@ export function AppProvider({
         if (active) {
           notificationPrefsValueRef.current = stored;
           setNotificationEnabledState(stored.enabled);
+          setTaskBarEnabledState(stored.taskBarEnabled);
           setReminderSoundState(stored.sound);
           // 通知网关按这个模块级值挑渠道：启动时先同步一次，否则「上次选了闹钟式」
           // 在重启后的第一条提醒上会退回默认音
@@ -167,6 +175,16 @@ export function AppProvider({
   const setNotificationEnabled = useCallback((enabled: boolean) => {
     setNotificationEnabledState(enabled);
     notificationPrefsValueRef.current = { ...notificationPrefsValueRef.current, enabled };
+    void notificationPrefsRef.current?.write(notificationPrefsValueRef.current);
+  }, []);
+
+  /** 开关任务栏 / 锁屏总览：只存本机偏好，真正显示由调用方申请权限并同步。 */
+  const setTaskBarEnabled = useCallback((enabled: boolean) => {
+    setTaskBarEnabledState(enabled);
+    notificationPrefsValueRef.current = {
+      ...notificationPrefsValueRef.current,
+      taskBarEnabled: enabled,
+    };
     void notificationPrefsRef.current?.write(notificationPrefsValueRef.current);
   }, []);
 
@@ -298,6 +316,8 @@ export function AppProvider({
       orgApi,
       notificationEnabled,
       setNotificationEnabled,
+      taskBarEnabled,
+      setTaskBarEnabled,
       reminderSound,
       setReminderSound,
       toggleScheme,
@@ -328,7 +348,8 @@ export function AppProvider({
     }),
     [theme, scheme, runtime, session, orgAccounts, activeOrgIdentityId, orgFocusDateKey,
      refreshOrgAccounts, claimOrgAccount, unlinkOrgAccount, orgApi, notificationEnabled,
-     setNotificationEnabled, reminderSound, setReminderSound, persist, toggleScheme],
+     setNotificationEnabled, taskBarEnabled, setTaskBarEnabled, reminderSound, setReminderSound,
+     persist, toggleScheme],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
@@ -356,6 +377,7 @@ export function useAppSessionState() {
     orgAccounts, activeOrgIdentityId, setActiveOrgIdentityId, orgFocusDateKey, setOrgFocusDateKey,
     refreshOrgAccounts, claimOrgAccount, unlinkOrgAccount, orgApi,
     notificationEnabled, setNotificationEnabled,
+    taskBarEnabled, setTaskBarEnabled,
     reminderSound, setReminderSound,
   } = useAppContext();
   return {
@@ -363,6 +385,7 @@ export function useAppSessionState() {
     orgAccounts, activeOrgIdentityId, setActiveOrgIdentityId, orgFocusDateKey, setOrgFocusDateKey,
     refreshOrgAccounts, claimOrgAccount, unlinkOrgAccount, orgApi,
     notificationEnabled, setNotificationEnabled,
+    taskBarEnabled, setTaskBarEnabled,
     reminderSound, setReminderSound,
   };
 }

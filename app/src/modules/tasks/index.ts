@@ -8,11 +8,27 @@ export { TaskEditorScreen } from './screens/TaskEditorScreen';
 export { TasksScreen } from './screens/TasksScreen';
 
 export {
-  TASK_PRIORITY_OPTIONS,
+  TASK_BAR_EVENT_WINDOW_DAYS,
+  clearTaskBarNotification,
+  flushPendingTaskBarCompletions,
+  requestTaskBarOverlayPermission,
+  restoreTaskBarOverlay,
+  setTaskBarOverlayEnabled,
+  subscribeNativeTaskBarCompletion,
+  subscribeTaskBarChanges,
+  syncTaskBarNotification,
+  taskBarOverlayEnabled,
+  taskBarOverlayPermissionGranted,
+  taskBarNotificationPermissionGranted,
+} from './taskBarNotification';
+
+export {
   buildCreateTaskPayload,
   buildUpdateTaskPayload,
   draftFromTask,
   emptyTaskDraft,
+  switchSnapshotFromTaskDraft,
+  taskDraftFromSwitch,
   validateTaskDraft,
   type TaskDraft,
   type TaskDraftValidation,

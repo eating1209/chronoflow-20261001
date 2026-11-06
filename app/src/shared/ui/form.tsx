@@ -358,6 +358,70 @@ export function SegmentedControl<T extends string>({
   );
 }
 
+/**
+ * 编辑页顶部的类型切换。比普通分段控件更高、更宽，
+ * 用来承载「日程 / 待办」这种会改变整页字段的主切换。
+ */
+export function LargeSegmentedControl<T extends string>({
+  options,
+  value,
+  onChange,
+  label,
+  disabled = false,
+}: {
+  options: SegmentOption<T>[];
+  value: T;
+  onChange: (next: T) => void;
+  label: string;
+  disabled?: boolean;
+}) {
+  const theme = useAppTheme();
+  return (
+    <View
+      accessibilityRole="tablist"
+      style={[
+        styles.segmentLarge,
+        {
+          backgroundColor: theme.color.surface,
+          borderColor: theme.color.border,
+          opacity: disabled ? 0.55 : 1,
+        },
+      ]}
+    >
+      {options.map((option) => {
+        const selected = option.value === value;
+        return (
+          <Pressable
+            key={option.value}
+            accessibilityRole="button"
+            accessibilityLabel={`${label}-${option.label}`}
+            accessibilityState={{ selected, disabled }}
+            disabled={disabled}
+            onPress={() => onChange(option.value)}
+            style={[
+              styles.segmentLargeItem,
+              selected && {
+                backgroundColor: theme.color.surfaceRaised,
+                borderColor: theme.color.border,
+              },
+            ]}
+          >
+            <Text
+              style={{
+                color: selected ? theme.color.textPrimary : theme.color.textSecondary,
+                fontSize: 14,
+                fontWeight: selected ? '600' : '400',
+              }}
+            >
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
@@ -373,5 +437,27 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 13 },
   rowBody: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end' },
   segment: { flexDirection: 'row', borderWidth: 1, overflow: 'hidden' },
-  segmentItem: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 7 },
+  /** 40dp 是手指能稳定点中的下限；结算页和提醒方式都共用这个分段控件。 */
+  segmentItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 40,
+    paddingVertical: 9,
+  },
+  segmentLarge: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 4,
+  },
+  segmentLargeItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
 });

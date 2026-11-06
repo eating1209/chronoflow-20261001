@@ -58,9 +58,24 @@ export {
 export {
   routeFromNotificationData,
   routeFromResponse,
+  tapFromResponse,
   type NotificationResponseLike,
   type NotificationRoute,
+  type NotificationTap,
 } from './route';
+
+export {
+  actionKindFor,
+  actionsFor,
+  categoryIdFor,
+  COMPLETE_ACTION_ID,
+  DEFAULT_ACTION_IDENTIFIER,
+  REMINDER_CATEGORY_ID,
+  SNOOZE_ACTION_ID,
+  SNOOZE_MINUTES,
+  type NotificationActionKind,
+  type ReminderActionDefinition,
+} from './reminderActions';
 
 export { subscribeNotificationResponses } from './listener';
 

@@ -4,6 +4,7 @@ import type { FeatureFlags } from '../modules/ops/pure';
 import { File } from 'expo-file-system';
 import type {
   EventDetail,
+  EventCompletion,
   EventOccurrence,
   FeedbackCategory,
   FeedbackItem,
@@ -26,6 +27,7 @@ import type {
   TokenResponse,
   UploadedImage,
   ParsedEventItem,
+  TranscriptionResult,
 } from '../shared/api';
 
 export interface CalendarSummary {
@@ -37,11 +39,19 @@ export interface CalendarSummary {
   isDefault: boolean;
 }
 
+/** 训练用途的单独同意状态（任务 5）；默认关闭。 */
+export interface TrainingDataPreference {
+  enabled: boolean;
+  retentionDays: number;
+}
+
 /** 日程的写请求体。新建与编辑共用，避免两边字段漂移（spec §4.1.4）。 */
 export interface EventWritePayload {
   title: string;
   /** 日程只有一个时间点（spec §4.1.2）；只说哪天的给当天 00:00 */
   at: string;
+  /** 日程时长（分钟）；开始时间 + 时长 = 结束时间。 */
+  durationMinutes?: number | null;
   timezone?: string;
   rrule?: string | null;
   description?: string | null;
@@ -66,6 +76,13 @@ export interface EventWritePayload {
 export interface TaskWritePayload {
   title: string;
   description?: string | null;
+  /** 结构化地点；PATCH 里空串表示清空整组地点 */
+  locationName?: string | null;
+  locationAddress?: string | null;
+  locationDetail?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  poiId?: string | null;
   /** 关联的日程 id；null 表示不修改 */
   eventId?: number | null;
   /** 显式解除日程关联（null 在 PATCH 里表示「不修改」） */
@@ -154,6 +171,11 @@ export function createEndpoints(client: ApiClient) {
     /** 更新昵称 / 头像 / 时区（spec §4.1.8）。avatarUrl 传上传通道返回的相对 URL。 */
     updateMe: (payload: { nickname?: string; avatarUrl?: string | null; timezone?: string }) =>
       client.patch<IdentityView>('/api/v1/me', payload),
+
+    /** 训练用途单独同意：只使用脱敏后的 OCR 文字，原图不出手机。 */
+    trainingData: () => client.get<TrainingDataPreference>('/api/v1/me/training-data'),
+    setTrainingData: (enabled: boolean) =>
+      client.put<TrainingDataPreference>('/api/v1/me/training-data', { enabled }),
 
     // ----------------------------------------------------- 账号与安全（实名 / 邮箱）
     /** 「账号与安全」页的当前状态：邮箱 / 是否已验证 / 是否已实名（spec §6.2）。 */
@@ -302,6 +324,12 @@ export function createEndpoints(client: ApiClient) {
         scope,
         occurrenceDate: occurrenceDate ?? undefined,
       }),
+    /** 勾选 / 取消勾选日程；重复日程带上 occurrenceDate，只影响这一次。 */
+    completeEvent: (eventId: number, completed: boolean, occurrenceDate?: string | null) =>
+      client.post<EventCompletion>(`/api/v1/events/${eventId}/complete`, {
+        completed,
+        occurrenceDate: occurrenceDate ?? undefined,
+      }),
 
     // ------------------------------------------------------------- 地点
     geoPlaces: (keyword: string, city?: string) =>
@@ -374,13 +402,16 @@ export function createEndpoints(client: ApiClient) {
      */
     appRelease: () => client.get<AppRelease>('/api/v1/system/app-release'),
     /**
-     * 语音转文字（spec §11 阶段三）。录音上限 60 秒；音频只在服务端内存里转 base64
-     * 转发给百炼，**不落盘**。返回的文本由 App 填进输入框，不自动发送。
+     * 语音 → 文字（spec §4.1.9.1）。
+     *
+     * <p>与 `uploadImage` 同一条 multipart 路径：必须用 expo-file-system 的 File，
+     * 不能写 `{ uri, name, type }`（Expo SDK 57 的 fetch 不接受，见 `uploadImage` 的注释）。
+     * 音频只在服务端内存里转发给百炼，**不落盘、不保存**。
      */
-    transcribe: (uri: string) => {
+    transcribeAudio: (uri: string) => {
       const form = new FormData();
       form.append('file', new File(uri) as unknown as Blob);
-      return client.upload<{ text: string; language: string | null }>('/api/v1/ai/transcribe', form);
+      return client.upload<TranscriptionResult>('/api/v1/ai/transcribe', form);
     },
     /** 提交意见反馈（spec §4.1.9）。images 是上传通道返回的相对 URL 数组。 */
     submitFeedback: (payload: {

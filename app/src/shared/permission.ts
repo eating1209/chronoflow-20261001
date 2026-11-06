@@ -1,4 +1,4 @@
-import { Alert, Linking } from 'react-native';
+import { Alert, Linking, PermissionsAndroid, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 
@@ -80,6 +80,58 @@ function gatewayFor(
     return {
       current: async () => (await (await api()).getPermissionsAsync()).granted,
       request: async () => (await (await api()).requestPermissionsAsync()).granted,
+      explain,
+      reject,
+    };
+  }
+  if (kind === 'microphone') {
+    /**
+     * Android 直接用框架的 PermissionsAndroid：录音权限就是 `RECORD_AUDIO`，
+     * 不需要为「申请权限」再引一个库。iOS 走 expo-audio 的 CoreAudio 权限。
+     *
+     * <p>两者都**动态 import / 只取框架 API**：Web 预览与缺原生模块的构建里，
+     * 这一段最多返回 false，不会让整个 App 起不来。
+     */
+    if (Platform.OS === 'android') {
+      const permission = PermissionsAndroid.PERMISSIONS.RECORD_AUDIO;
+      return {
+        current: async () => PermissionsAndroid.check(permission),
+        request: async () => (
+          await PermissionsAndroid.request(permission)
+        ) === PermissionsAndroid.RESULTS.GRANTED,
+        explain,
+        reject,
+      };
+    }
+    /**
+     * expo-audio 的权限接口只在这一个分支用到，用**结构类型**声明它的形状：
+     * 这个包在不同 SDK 小版本里导出名有变化（`AudioModule` / 顶层函数），
+     * 写死具体名字会让 typecheck 跟着依赖升级一起碎；这里取不到就如实当作「没有权限」。
+     */
+    type AudioPermissionApi = {
+      AudioModule?: {
+        getRecordingPermissionsAsync?: () => Promise<{ granted: boolean }>;
+        requestRecordingPermissionsAsync?: () => Promise<{ granted: boolean }>;
+      };
+    };
+    const api = async () => (await import('expo-audio')) as unknown as AudioPermissionApi;
+    return {
+      current: async () => {
+        try {
+          const module = await api();
+          return (await module.AudioModule?.getRecordingPermissionsAsync?.())?.granted ?? false;
+        } catch {
+          return false;
+        }
+      },
+      request: async () => {
+        try {
+          const module = await api();
+          return (await module.AudioModule?.requestRecordingPermissionsAsync?.())?.granted ?? false;
+        } catch {
+          return false;
+        }
+      },
       explain,
       reject,
     };

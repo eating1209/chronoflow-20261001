@@ -17,16 +17,24 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import type { EventOccurrence, HolidayResponse, SearchResultItem } from '../../../shared/api';
+import type { EventOccurrence, HolidayResponse, SearchResultItem, Task } from '../../../shared/api';
 import { draftsFromItems, type RecognizedDraft } from '../../vision';
 import { askPermission } from '../../../shared/permission';
 import { MonthCalendar } from '../components/MonthCalendar';
 import { WheelDatePicker } from '../components/WheelDatePicker';
 import { ListGroup, ListRow, ListSeparator, SectionHeader } from '../../../shared/ui';
 import { Card, EmptyState, Pill, Screen } from '../../../shared/ui';
-import { useAppTheme, useRuntime } from '../../../context/AppContext';
+import { useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
+import { refreshLocalReminders } from '../../notifications';
 import {
+  subscribeTaskBarChanges,
+  syncTaskBarNotification,
+} from '../../tasks/taskBarNotification';
+import {
+  agendaDateKeys,
+  agendaItemsForDay,
   dayHeading,
+  formatEventTimeRange,
   formatEventTime,
   localDateKey,
   locationLabel,
@@ -64,6 +72,8 @@ export function AgendaScreen({
   onOpenTask,
   onOpenOrgEvent,
   onReviewDrafts,
+  onVoiceInput,
+  agendaFocus,
 }: {
   onCreateEvent: (dateKey: string) => void;
   onOpenEvent: (eventId: number, dateKey: string, occurrenceDate: string | null) => void;
@@ -72,10 +82,15 @@ export function AgendaScreen({
   onOpenOrgEvent: (identityId: number, dateKey: string) => void;
   /** 图片识别出的日程草稿：进确认页补日期 / 改标题，用户确认后再落库（spec §4.1.9） */
   onReviewDrafts: (drafts: RecognizedDraft[]) => void;
+  /** 语音输入：进「按住说话」页面（spec §4.1.9.1） */
+  onVoiceInput: () => void;
+  /** 保存日程后把日历定位到那一天；version 变了才消费一次 */
+  agendaFocus?: { version: number; dateKey: string | null };
 }) {
   const theme = useAppTheme();
   const insets = useSafeAreaInsets();
-  const { api } = useRuntime();
+  const { notificationEnabled, taskBarEnabled } = useAppSessionState();
+  const { api, reminders } = useRuntime();
   const today = useMemo(todayKey, []);
   const [todayYear, todayMonth] = useMemo(() => {
     const [year, month] = today.split('-').map(Number) as [number, number];
@@ -85,11 +100,12 @@ export function AgendaScreen({
   const [{ year, month }, setView] = useState({ year: todayYear, month: todayMonth });
   const [selectedDateKey, setSelectedDateKey] = useState(today);
   const [occurrences, setOccurrences] = useState<EventOccurrence[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [holidays, setHolidays] = useState<HolidayResponse[]>([]);
   const [holidayError, setHolidayError] = useState(false);
   /** 正在识别（选图 → 端侧 OCR → 云端解析）：期间按钮显示「识别中…」并禁用 */
   const [recognizing, setRecognizing] = useState(false);
-  /** 「上传图片」来源选择层：相册上传 / 拍照上传（取消单独一条，见 JSX） */
+  /** 「识别日程」来源选择层：相册上传 / 拍照上传 / 语音输入（取消单独一条，见 JSX） */
   const [sourceOpen, setSourceOpen] = useState(false);
   /**
    * 弹层的动画进度：0 = 完全收起（在屏幕外），1 = 完全展开。
@@ -135,6 +151,19 @@ export function AgendaScreen({
   /** 滚轮里的草稿日期：滚动过程不立刻跳，点「确定」才落到日历上 */
   const [jumpDraft, setJumpDraft] = useState(selectedDateKey);
 
+  // 新建 / 编辑日程保存后，日历回到那条日程所在的日期，避免「提示保存成功但列表里看不到」。
+  useEffect(() => {
+    if (!agendaFocus || agendaFocus.version === 0 || !agendaFocus.dateKey) {
+      return;
+    }
+    const [nextYear, nextMonth] = agendaFocus.dateKey.split('-').map(Number);
+    if (!nextYear || !nextMonth) {
+      return;
+    }
+    setSelectedDateKey(agendaFocus.dateKey);
+    setView({ year: nextYear, month: nextMonth });
+  }, [agendaFocus?.dateKey, agendaFocus?.version]);
+
   const searchActive = keyword.trim().length > 0;
 
   const load = useCallback(async () => {
@@ -144,11 +173,14 @@ export function AgendaScreen({
       const currentGrid = buildMonthGrid(year, month);
       // 节假日按年取：网格会带出上/下月补位，可能跨年，所以取网格覆盖到的每一年
       const years = yearsSpanned(currentGrid.startDateKey, currentGrid.endDateKey);
-      const [occurrenceList, holidayLists] = await Promise.all([
+      const [occurrenceList, taskList, holidayLists] = await Promise.all([
         api.eventsInRange(
           dateKeyToIso(currentGrid.startDateKey),
           dateKeyToIso(currentGrid.endDateKey, true),
         ),
+        // 待办没有按月查询接口；它们数量有限，而且没截止时间的会被这里过滤掉。
+        // 待办接口失败不该让整张日历空掉，因此降级为空列表。
+        api.tasks().catch(() => [] as Task[]),
         // 节假日是附属信息：拿不到就只是不显示标记，但要让用户看见这一点，
         // 不能悄悄吞掉——否则「这天怎么没标休」会变成一个查不出的谜
         Promise.all(years.map((item) => api.holidays(item))).catch(() => {
@@ -158,13 +190,21 @@ export function AgendaScreen({
       ]);
       setHolidayError(false);
       setOccurrences(occurrenceList);
+      setTasks(taskList);
       setHolidays(holidayLists);
+      void syncTaskBarNotification({
+        api,
+        enabled: taskBarEnabled,
+        tasks: taskList,
+        events: occurrenceList,
+        now: Date.now(),
+      });
     } catch (cause) {
       setError(userFacingError(cause, '加载失败'));
     } finally {
       setLoading(false);
     }
-  }, [api, year, month]);
+  }, [api, year, month, taskBarEnabled]);
 
   // 从编辑页返回、或切回本 tab 时都要重新拉取，否则新建的日程不会出现
   useFocusEffect(
@@ -172,6 +212,65 @@ export function AgendaScreen({
       void load();
     }, [load]),
   );
+
+  // 锁屏 / 通知栏里完成的条目同步到服务端后，当前页要重新拉一遍。
+  useEffect(() => subscribeTaskBarChanges(() => void load()), [load]);
+
+  const toggleEventDone = async (item: EventOccurrence) => {
+    const completed = !item.done;
+    const nextOccurrences = occurrences.map((candidate) =>
+      candidate.eventId === item.eventId && candidate.occurrenceDate === item.occurrenceDate
+        ? {
+            ...candidate,
+            done: completed,
+            completedAt: completed ? new Date().toISOString() : null,
+          }
+        : candidate,
+    );
+    setOccurrences(nextOccurrences);
+    void syncTaskBarNotification({
+      api,
+      enabled: taskBarEnabled,
+      tasks,
+      events: nextOccurrences,
+      now: Date.now(),
+    });
+    try {
+      await api.completeEvent(item.eventId, completed, item.occurrenceDate);
+      // 完成 / 取消完成后本机排期要跟着服务端走，避免已完成的日程继续响。
+      await refreshLocalReminders({ api, scheduler: reminders, enabled: notificationEnabled });
+    } catch {
+      await load();
+    }
+  };
+
+  const toggleTaskDone = async (task: Task) => {
+    const completed = task.status !== 'DONE';
+    const nextStatus: Task['status'] = completed ? 'DONE' : 'TODO';
+    const nextTasks = tasks.map((candidate) =>
+      candidate.id === task.id
+        ? {
+            ...candidate,
+            status: nextStatus,
+            completedAt: completed ? new Date().toISOString() : null,
+          }
+        : candidate,
+    );
+    setTasks(nextTasks);
+    void syncTaskBarNotification({
+      api,
+      enabled: taskBarEnabled,
+      tasks: nextTasks,
+      events: occurrences,
+      now: Date.now(),
+    });
+    try {
+      await api.completeTask(task.id, completed);
+      await refreshLocalReminders({ api, scheduler: reminders, enabled: notificationEnabled });
+    } catch {
+      await load();
+    }
+  };
 
   useEffect(() => {
     const trimmed = keyword.trim();
@@ -210,17 +309,14 @@ export function AgendaScreen({
   }, [api, keyword]);
 
   const eventDates = useMemo(
-    () => new Set(occurrences.map((item) => localDateKey(item.at, APP_TIMEZONE))),
-    [occurrences],
+    () => agendaDateKeys(occurrences, tasks, APP_TIMEZONE),
+    [occurrences, tasks],
   );
   const holidayMarks = useMemo(() => toHolidayMarks(holidays), [holidays]);
 
-  const dayEvents = useMemo(
-    () =>
-      occurrences
-        .filter((item) => localDateKey(item.at, APP_TIMEZONE) === selectedDateKey)
-        .sort((a, b) => a.at.localeCompare(b.at)),
-    [occurrences, selectedDateKey],
+  const dayAgenda = useMemo(
+    () => agendaItemsForDay(occurrences, tasks, selectedDateKey, APP_TIMEZONE),
+    [occurrences, selectedDateKey, tasks],
   );
 
   /**
@@ -459,7 +555,7 @@ export function AgendaScreen({
 
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="点此上传图片，一键添加日程"
+            accessibilityLabel="点此识别日程：上传图片或语音输入"
             accessibilityState={{ busy: recognizing, disabled: recognizing }}
             disabled={recognizing}
             hitSlop={8}
@@ -467,7 +563,7 @@ export function AgendaScreen({
             style={styles.uploadEntry}
           >
             <Text style={{ color: theme.color.accent, fontSize: 14, fontWeight: '600' }}>
-              {recognizing ? '识别中…' : '点此上传图片，一键添加日程'}
+              {recognizing ? '识别中…' : '点此识别日程，一键添加'}
             </Text>
           </Pressable>
 
@@ -490,43 +586,166 @@ export function AgendaScreen({
             <Text style={{ color: theme.color.danger, marginBottom: 8 }}>{error}</Text>
           ) : null}
 
-          {!loading && dayEvents.length === 0 ? (
+          {!loading && dayAgenda.length === 0 ? (
             <EmptyState title="这天没有安排" hint="下拉可刷新" />
           ) : null}
 
-          {dayEvents.map((item) => (
-            <View key={`${item.eventId}-${item.at}`} style={{ marginBottom: theme.spacing.sm }}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`日程-${item.title}`}
-                onPress={() =>
-                  onOpenEvent(item.eventId, localDateKey(item.at, APP_TIMEZONE), item.occurrenceDate)
-                }
+          {dayAgenda.map((entry) =>
+            entry.kind === 'event' ? (
+              <View
+                key={`event-${entry.event.eventId}-${entry.at}`}
+                style={{ marginBottom: theme.spacing.sm }}
               >
                 <Card>
                   <View style={styles.eventRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ color: theme.color.textPrimary, fontSize: 16, fontWeight: '600' }}>
-                        {item.title}
-                      </Text>
-                      <Text style={{ color: theme.color.textSecondary, fontSize: 13, marginTop: 2 }}>
-                        {[
-                          formatEventTime(item.at, item.timezone || APP_TIMEZONE),
-                          locationLabel(item.locationName, item.locationDetail),
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </Text>
-                    </View>
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityLabel={`${entry.event.done ? '取消完成' : '完成'}日程 ${entry.event.title}`}
+                      accessibilityState={{ checked: entry.event.done }}
+                      hitSlop={8}
+                      onPress={() => void toggleEventDone(entry.event)}
+                      style={styles.eventCheckTouch}
+                    >
+                      <View
+                        style={[
+                          styles.eventCheck,
+                          {
+                            borderColor: entry.event.done
+                              ? theme.color.textTertiary
+                              : theme.color.textSecondary,
+                            backgroundColor: entry.event.done
+                              ? theme.color.textTertiary
+                              : 'transparent',
+                          },
+                        ]}
+                      >
+                        {entry.event.done ? (
+                          <Ionicons
+                            name="checkmark"
+                            size={14}
+                            color={theme.color.surfaceRaised}
+                          />
+                        ) : null}
+                      </View>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`日程-${entry.event.title}`}
+                      onPress={() =>
+                        onOpenEvent(
+                          entry.event.eventId,
+                          localDateKey(entry.event.at, APP_TIMEZONE),
+                          entry.event.occurrenceDate,
+                        )
+                      }
+                      style={{ flex: 1 }}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={{
+                            color: entry.event.done
+                              ? theme.color.textSecondary
+                              : theme.color.textPrimary,
+                            fontSize: 16,
+                            fontWeight: '600',
+                            textDecorationLine: entry.event.done ? 'line-through' : 'none',
+                          }}
+                        >
+                          {entry.event.title}
+                        </Text>
+                        <Text style={{ color: theme.color.textSecondary, fontSize: 13, marginTop: 2 }}>
+                          {[
+                            formatEventTimeRange(
+                              entry.event,
+                              entry.event.timezone || APP_TIMEZONE,
+                            ),
+                            locationLabel(
+                              entry.event.locationName,
+                              entry.event.locationDetail,
+                            ),
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </Text>
+                      </View>
+                    </Pressable>
                     <View style={styles.pills}>
-                      {item.recurring ? <Pill text="重复" /> : null}
-                      {item.modified ? <Pill text="已改期" tone="warning" /> : null}
+                      {entry.event.recurring ? <Pill text="重复" /> : null}
+                      {entry.event.modified ? <Pill text="已改期" tone="warning" /> : null}
                     </View>
                   </View>
                 </Card>
-              </Pressable>
-            </View>
-          ))}
+              </View>
+            ) : (
+              <View key={`task-${entry.task.id}`} style={{ marginBottom: theme.spacing.sm }}>
+                <Card style={styles.taskCard}>
+                  <View style={styles.eventRow}>
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityLabel={`${entry.task.status === 'DONE' ? '取消完成' : '完成'}待办 ${entry.task.title}`}
+                      accessibilityState={{ checked: entry.task.status === 'DONE' }}
+                      hitSlop={8}
+                      onPress={() => void toggleTaskDone(entry.task)}
+                      style={styles.eventCheckTouch}
+                    >
+                      <View
+                        style={[
+                          styles.eventCheck,
+                          {
+                            borderColor: theme.color.textSecondary,
+                            backgroundColor:
+                              entry.task.status === 'DONE'
+                                ? theme.color.textTertiary
+                                : 'transparent',
+                          },
+                        ]}
+                      >
+                        {entry.task.status === 'DONE' ? (
+                          <Ionicons
+                            name="checkmark"
+                            size={14}
+                            color={theme.color.surfaceRaised}
+                          />
+                        ) : null}
+                      </View>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`待办-${entry.task.title}`}
+                      onPress={() => onOpenTask(entry.task.id)}
+                      style={{ flex: 1 }}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={{
+                            color:
+                              entry.task.status === 'DONE'
+                                ? theme.color.textSecondary
+                                : theme.color.textPrimary,
+                            fontSize: 16,
+                            fontWeight: '600',
+                            textDecorationLine:
+                              entry.task.status === 'DONE' ? 'line-through' : 'none',
+                          }}
+                        >
+                          {entry.task.title}
+                        </Text>
+                        <Text style={{ color: theme.color.textSecondary, fontSize: 13, marginTop: 2 }}>
+                          {formatEventTime(entry.at, APP_TIMEZONE)} 截止
+                        </Text>
+                      </View>
+                    </Pressable>
+                    <View style={styles.pills}>
+                      <Pill
+                        text={entry.task.status === 'DONE' ? '已完成' : '待办'}
+                        tone={entry.task.status === 'DONE' ? 'success' : 'neutral'}
+                      />
+                    </View>
+                  </View>
+                </Card>
+              </View>
+            ),
+          )}
         </ScrollView>
       )}
 
@@ -668,7 +887,7 @@ export function AgendaScreen({
               ]}
               accessibilityViewIsModal
             >
-              <Text style={[styles.sheetTitle, { color: theme.color.textTertiary }]}>上传图片</Text>
+              <Text style={[styles.sheetTitle, { color: theme.color.textTertiary }]}>识别日程</Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="相册上传"
@@ -687,6 +906,19 @@ export function AgendaScreen({
               >
                 <Ionicons name="camera-outline" size={20} color={theme.color.textPrimary} />
                 <Text style={{ color: theme.color.textPrimary, fontSize: 16 }}>拍照上传</Text>
+              </Pressable>
+              <View style={[styles.sheetDivider, { backgroundColor: theme.color.border }]} />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="语音输入"
+                onPress={() => {
+                  closeSourceSheet();
+                  onVoiceInput();
+                }}
+                style={styles.sheetRow}
+              >
+                <Ionicons name="mic-outline" size={20} color={theme.color.textPrimary} />
+                <Text style={{ color: theme.color.textPrimary, fontSize: 16 }}>语音输入</Text>
               </Pressable>
             </View>
             {/* 取消单独一张，不跟上面两条挤在一起 */}
@@ -741,6 +973,16 @@ const styles = StyleSheet.create({
   headingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
   dayHeading: { fontSize: 15, fontWeight: '600' },
   eventRow: { flexDirection: 'row', alignItems: 'center' },
+  eventCheckTouch: { width: 36, alignItems: 'center', justifyContent: 'center' },
+  eventCheck: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  taskCard: { borderStyle: 'dashed' },
   pills: { flexDirection: 'row', gap: 6 },
   typeTag: {
     width: 34,

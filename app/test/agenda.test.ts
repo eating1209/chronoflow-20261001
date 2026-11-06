@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { EventOccurrence, Task } from '../src/shared/api';
 import {
+  agendaDateKeys,
+  agendaItemsForDay,
   formatDayLabel,
   formatEventTime,
   groupByDay,
@@ -16,6 +18,12 @@ describe('日程领域逻辑', () => {
     // 北京时间 10-05 00:30（UTC 10-04 16:30）——按 UTC 会算成前一天
     expect(localDateKey('2026-10-04T16:30:00Z', 'Asia/Shanghai')).toBe('2026-10-05');
     expect(localDateKey('2026-10-04T16:30:00Z', 'UTC')).toBe('2026-10-04');
+  });
+
+  it('localDateKey 遇到损坏时间返回空串，而不是抛 RangeError', () => {
+    expect(localDateKey('', 'Asia/Shanghai')).toBe('');
+    expect(localDateKey('not-a-date', 'Asia/Shanghai')).toBe('');
+    expect(localDateKey(undefined, 'Asia/Shanghai')).toBe('');
   });
 
   it('groupByDay 按日期分组且组内按时间升序', () => {
@@ -81,6 +89,7 @@ describe('日程领域逻辑', () => {
         recurring: true,
         occurrenceDate: '2026-10-05',
         modified: false,
+        done: false,
       },
       {
         eventId: 1,
@@ -94,11 +103,85 @@ describe('日程领域逻辑', () => {
         recurring: true,
         occurrenceDate: '2026-10-07',
         modified: false,
+        done: false,
       },
     ];
 
     const sections = groupByDay(occurrences, (item) => item.at, 'Asia/Shanghai');
     expect(sections).toHaveLength(2);
     expect(sections[0]?.items[0]?.occurrenceDate).toBe('2026-10-05');
+  });
+
+  it('日历当天列表合并日程与有截止时间的待办，并按时间排序', () => {
+    const occurrences: EventOccurrence[] = [
+      {
+        eventId: 1,
+        calendarId: 1,
+        title: '开会',
+        locationName: null,
+        locationAddress: null,
+        locationDetail: null,
+        at: '2026-10-05T02:00:00Z',
+        timezone: 'Asia/Shanghai',
+        recurring: false,
+        occurrenceDate: null,
+        modified: false,
+        done: false,
+      },
+    ];
+    const base = {
+      calendarId: 1,
+      parentTaskId: null,
+      eventId: null,
+      eventTitle: null,
+      description: null,
+      completedAt: null,
+      sortOrder: 0,
+      priority: 'NORMAL' as const,
+    };
+    const tasks: Task[] = [
+      { ...base, id: 2, title: '交材料', dueAt: '2026-10-05T01:00:00Z', status: 'TODO' },
+      { ...base, id: 3, title: '没时间的待办', dueAt: null, status: 'TODO' },
+      { ...base, id: 4, title: '已取消', dueAt: '2026-10-05T03:00:00Z', status: 'CANCELLED' },
+    ];
+
+    const items = agendaItemsForDay(occurrences, tasks, '2026-10-05', 'Asia/Shanghai');
+
+    expect(items.map((item) => (item.kind === 'event' ? item.event.title : item.task.title))).toEqual([
+      '交材料',
+      '开会',
+    ]);
+    expect(agendaDateKeys(occurrences, tasks, 'Asia/Shanghai')).toEqual(
+      new Set(['2026-10-05']),
+    );
+  });
+
+  it('损坏时间的历史数据会被跳过，合法日程仍正常显示', () => {
+    const invalid: EventOccurrence = {
+      eventId: 99,
+      calendarId: 1,
+      title: '坏数据',
+      locationName: null,
+      locationAddress: null,
+      locationDetail: null,
+      at: 'not-a-date',
+      timezone: 'Asia/Shanghai',
+      recurring: false,
+      occurrenceDate: null,
+      modified: false,
+      done: false,
+    };
+    const valid: EventOccurrence = {
+      ...invalid,
+      eventId: 1,
+      title: '正常日程',
+      at: '2026-10-05T02:00:00Z',
+    };
+
+    expect(() => agendaDateKeys([invalid, valid], [], 'Asia/Shanghai')).not.toThrow();
+    expect(agendaDateKeys([invalid, valid], [], 'Asia/Shanghai')).toEqual(
+      new Set(['2026-10-05']),
+    );
+    expect(agendaItemsForDay([invalid, valid], [], '2026-10-05', 'Asia/Shanghai')).toHaveLength(1);
   });
 });

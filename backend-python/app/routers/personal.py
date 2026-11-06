@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from fastapi import APIRouter, Body, Depends, Query
 from pydantic import BaseModel, Field
@@ -43,6 +43,7 @@ class EventCreate(BaseModel):
     poiId: str | None = Field(default=None, max_length=64)
     # 日程只有一个时间点（spec §4.1.2）；只说哪一天的给当天 00:00
     at: datetime
+    durationMinutes: int | None = None
     timezone: str | None = None
     rrule: str | None = None
     status: str | None = None
@@ -63,6 +64,7 @@ class EventUpdate(BaseModel):
     longitude: float | None = None
     poiId: str | None = None
     at: datetime | None = None
+    durationMinutes: int | None = None
     timezone: str | None = None
     rrule: str | None = None
     status: str | None = None
@@ -76,6 +78,12 @@ class EventUpdate(BaseModel):
     occurrenceDate: str | None = None
 
 
+class EventComplete(BaseModel):
+    completed: bool
+    # 重复日程必须给这一次的本地日期；非重复日程为空
+    occurrenceDate: date | None = None
+
+
 class TaskCreate(BaseModel):
     calendarId: int | None = None
     parentTaskId: int | None = None
@@ -83,6 +91,12 @@ class TaskCreate(BaseModel):
     eventId: int | None = None
     title: str
     description: str | None = None
+    locationName: str | None = Field(default=None, max_length=128)
+    locationAddress: str | None = Field(default=None, max_length=255)
+    locationDetail: str | None = Field(default=None, max_length=255)
+    latitude: float | None = None
+    longitude: float | None = None
+    poiId: str | None = Field(default=None, max_length=64)
     dueAt: datetime | None = None
     priority: str | None = None
     # 图片附件的相对 URL（§4.1.3）：日历页「拍照」会直接带一张进来
@@ -93,6 +107,12 @@ class TaskCreate(BaseModel):
 class TaskUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
+    locationName: str | None = None
+    locationAddress: str | None = None
+    locationDetail: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    poiId: str | None = None
     eventId: int | None = None
     # 显式解除日程关联：null 在 PATCH 里是「不修改」
     clearEvent: bool | None = None
@@ -247,6 +267,20 @@ def delete_event(
 ) -> dict:
     service.delete_event(principal.identity_id, id, scope, occurrenceDate)
     return envelope(None)
+
+
+@router.post("/events/{id}/complete")
+def complete_event(
+    id: int,
+    payload: EventComplete,
+    principal: IdentityPrincipal = Depends(current_identity),
+    service=Depends(_service),
+) -> dict:
+    return envelope(
+        service.complete_event(
+            principal.identity_id, id, payload.completed, payload.occurrenceDate
+        )
+    )
 
 
 @router.post("/events/{id}/convert-to-task")

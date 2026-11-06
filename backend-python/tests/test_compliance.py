@@ -69,6 +69,14 @@ def test_self_service_deletion_purges_personal_data(client) -> None:
     ).json()
     assert task["code"] == 0, task
 
+    # 训练样本也属于该账号的数据：开启同意、写入一条，注销后必须一起消失
+    from app.services import training_data
+
+    client.put("/api/v1/me/training-data", json={"enabled": True}, headers=auth(tokens))
+    assert training_data.record_sample(
+        identity_id, "联系人：王五 13700137000", [{"title": "王老师安排考试"}]
+    )
+
     deleted = client.post("/api/v1/me/deletion", headers=auth(tokens)).json()
     assert deleted["code"] == 0, deleted
 
@@ -99,6 +107,10 @@ def test_self_service_deletion_purges_personal_data(client) -> None:
         # 3) 个人身份停用并抹掉昵称
         assert row["identity_status"] == "DISABLED"
         assert row["nickname"] == "已注销用户"
+        assert session.execute(
+            text("SELECT count(*) FROM training_sample WHERE identity_id = :identity_id"),
+            {"identity_id": identity_id},
+        ).scalar_one() == 0
 
         # 4) 个人数据被物理删除
         for table, column in (

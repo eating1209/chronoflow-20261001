@@ -4,6 +4,8 @@ import com.chronoflow.auth.security.CurrentIdentity;
 import com.chronoflow.common.api.ApiResponse;
 import com.chronoflow.personal.dto.EventOccurrence;
 import com.chronoflow.personal.dto.PersonalDtos.EventCreateRequest;
+import com.chronoflow.personal.dto.PersonalDtos.EventCompleteRequest;
+import com.chronoflow.personal.dto.PersonalDtos.EventCompletionResponse;
 import com.chronoflow.personal.dto.PersonalDtos.EventResponse;
 import com.chronoflow.personal.dto.PersonalDtos.EventScope;
 import com.chronoflow.personal.dto.PersonalDtos.EventUpdateRequest;
@@ -113,6 +115,14 @@ public class EventController {
         Long identityId = CurrentIdentity.require().identityId();
         eventService.delete(identityId, id, scope, occurrenceDate);
         return ApiResponse.ok();
+    }
+
+    /** 勾选 / 取消勾选日程；重复日程必须带 occurrenceDate，只影响这一次。 */
+    @PostMapping("/{id}/complete")
+    public ApiResponse<EventCompletionResponse> complete(@PathVariable Long id,
+                                                         @Valid @RequestBody EventCompleteRequest request) {
+        Long identityId = CurrentIdentity.require().identityId();
+        return ApiResponse.ok(eventService.complete(identityId, id, request));
     }
 
     private static EventResponse toResponse(Event event) {

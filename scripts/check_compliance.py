@@ -247,15 +247,18 @@ def check_standard_wording() -> None:
 
 
 def check_ai_feature_scope() -> None:
-    """本版本不含 AI 对话：文档、权限、代码三处必须同时「没有」。
+    """AI 对话仍下线；语音输入是单独的、已声明的功能。
 
-    2026-10-19 的决定：先把「小安」对话下线再上架——应用宝把「AI 机器人对话」列为特殊行业，
-    需要算法备案 + 安全评估（1–3 个月）。代码已归档到 `archive/ai-v1.1/`，下个版本再恢复。
+    2026-10-19：应用宝把「AI 机器人对话」列为特殊行业（算法备案 + 安全评估），
+    「小安」整体下线，代码归档在 `archive/ai-v1.1/`。
 
-    所以这里反过来守两条：
-    ① 对话 / 语音 / 麦克风的声明必须**全部消失**（否则就是「声明与实际不符」——App 里没有，
-       文本里还写着，审核一样打回）；
-    ② 「图片识别日程」仍在用百炼做文字解析，这条披露**必须保留**，不能连带删掉。
+    2026-11-06：上线「长按说话 → 转文字 → 识别成日程」。它不是 AI 对话
+    （没有自由对话、没有机器人人格），但**录音与云端转写必须如实披露**。
+    所以这里守四件事：
+    ① 「小安 / 智能助手」这类对话功能仍不许出现，代码也不许回来；
+    ② 语音 / 麦克风 / 录音必须在隐私政策与两份清单里**明确写出来**；
+    ③ 云端转写（百炼）要在第三方共享清单里单独成条；
+    ④ App 侧真的申请了 RECORD_AUDIO（构建期没被 blockedPermissions 删掉）。
     """
     policy = read(LEGAL / "privacy-policy.md")
     shared = read(LEGAL / "shared-info-with-third-parties.md")
@@ -268,14 +271,34 @@ def check_ai_feature_scope() -> None:
         "user-agreement.md": read(LEGAL / "user-agreement.md"),
         "children-privacy.md": read(LEGAL / "children-privacy.md"),
     }
-    # 连「语音」「对话」「录音」这类词也一起扫：审核是机器先扫关键词，
-    # 哪怕写的是「本版本不提供语音输入」，也会被当成功能声明捞出来问一遍。
+    # ① 对话功能仍下线：只扫「小安 / 智能助手」这两个功能名。
+    #    「语音」不再扫——它是本版本**真的有**的功能，声明必须与安装包一致。
     for where, text in documents.items():
-        for needle in ("小安", "智能助手", "语音", "麦克风", "录音", "对话"):
+        for needle in ("小安", "智能助手"):
             require(
                 needle not in text,
-                f"{where} 仍出现「{needle}」——本版本不含 AI 对话，文档必须与安装包一致",
+                f"{where} 仍出现「{needle}」——AI 对话仍下线，文档必须与安装包一致",
             )
+
+    # ② 语音输入的披露：三份文本都要有，且必须写清「录音」而不是只说「语音」。
+    require_contains(
+        policy,
+        ["语音", "麦克风", "录音"],
+        "privacy-policy.md",
+        "上线语音输入后，隐私政策必须写清麦克风权限、录音与转写用途、以及音频是否离开手机",
+    )
+    require_contains(
+        collected,
+        ["语音", "录音"],
+        "personal-info-collected.md",
+        "《已收集个人信息清单》要列出语音录音（含使用场景、是否必需、是否保存）",
+    )
+    require_contains(
+        shared,
+        ["语音", "百炼"],
+        "shared-info-with-third-parties.md",
+        "《与第三方共享个人信息清单》要单独列出云端语音转写给百炼",
+    )
 
     require_contains(
         policy,
@@ -291,8 +314,20 @@ def check_ai_feature_scope() -> None:
     )
     permissions = read(APP_SRC / "shared" / "permissions.ts")
     require(
-        "microphone" not in permissions,
-        "shared/permissions.ts 还声明了麦克风——语音输入已随小安下线，权限也要一起摘掉",
+        "microphone" in permissions,
+        "shared/permissions.ts 没有声明麦克风——语音输入上线后权限适配层必须同步",
+    )
+    app_json = json.loads(read(ROOT / "app" / "app.json"))
+    android = app_json["expo"]["android"]
+    declared = {item.replace("android.permission.", "") for item in android.get("permissions", [])}
+    blocked = {item.replace("android.permission.", "") for item in android.get("blockedPermissions", [])}
+    require(
+        "RECORD_AUDIO" in declared,
+        "app.json 的 android.permissions 缺少 RECORD_AUDIO——语音输入装上去会拿不到麦克风权限",
+    )
+    require(
+        "RECORD_AUDIO" not in blocked,
+        "app.json 的 blockedPermissions 仍屏蔽 RECORD_AUDIO——构建期会把权限整条删掉",
     )
     require(
         not (APP_SRC / "screens" / "AgentChatScreen.tsx").exists(),

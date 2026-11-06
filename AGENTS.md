@@ -2,7 +2,27 @@
 
 # AGENTS.md —— 时纪流（ChronoFlow）会话交接文档
 
-## 2026-10-28 本轮交接（最新）
+## 2026-11-05 顶部任务小条（最新）
+
+- 待办页已收紧「已逾期」到「待安排」的间距，并把「已逾期 / 已完成」折叠卡统一为 52dp 高。
+- Android 新增紧贴状态栏下方的三色悬浮小条：收起时是黑色胶囊，点一下展开任务卡；颜色页签切换分组，行尾圆圈完成任务，点任务打开 App。开关在「我的 → 偏好 → 顶部任务小条」，需要用户明确授权 `SYSTEM_ALERT_WINDOW`（显示在其他应用上层）。
+- 原生实现只在 `app/plugins/taskbar-native/`：`TaskBarOverlayService.kt`，由 `withTaskBarNotification.js` 复制并注入前台服务声明。不要直接改 `app/android/`；那是 prebuild 产物。
+- `SYSTEM_ALERT_WINDOW` 已成为上架权限，应用宝等商店可能要求解释用途；不想要悬浮条时，设置里可关闭，普通通知卡仍可用。
+- 本轮验证：App typecheck 通过，46 个测试文件 / 311 项通过；Kotlin 单独编译成 dex 成功；手机与模拟器测试包已签名，路径 `/home/eating/chronoflow-1.1.8-overlay-phone.apk`、`/home/eating/chronoflow-1.1.8-overlay-emulator.apk`。当前沙箱的 Gradle 仍会因本地 socket `Operation not permitted` 失败，完整 Gradle 编译请在自己的 Ubuntu 终端运行。
+- 工作区改动仍未 commit / push，继续保持现状。
+
+## 2026-10-31 本轮交接（最新）
+
+- **2026-11-01 追加**：日程与待办已完成 L2 的“日程可勾完成”。迁移 `V24__event_completion.sql` 新增按身份、按重复实例保存的完成状态；接口 `POST /api/v1/events/{id}/complete` 已同步 Java / Python / 契约 / App。任务条的日程行和日历当日列表都可勾选，重复日程只完成带 `occurrenceDate` 的那一次。
+- **2026-11-01 再追加**：L1 合并视图也已完成。日历当天列表现在会把「有截止时间的未取消待办」和日程按时间混排（没有时间的待办不进入日历），月历日期点同时标记待办截止日；待办用虚线卡片区分，勾完成后当天保留、跨天不出现。纯前端改动，没有新增接口或迁移。
+
+- 用户是**陶伊婷**（成员 6、法定代表人、项目技术负责人）。她要求把本轮对话的结论长期记住，下一次继续时先读本段。
+- GitHub 分支保护结论：仓库是**个人免费账号下的私有仓库**。GitHub 页面明确提示 Branch protection / Rulesets 在该仓库中**不会强制执行**（`Not enforced`）。已经创建过 `main` ruleset，可以保留，不要误以为它已经挡住直接推送。
+- **不要为了开启保护把仓库改成 Public**：仓库里有服务器地址、审核账号和备案材料。后续若学校提供 GitHub Organization 且带 Team 权限，再把仓库转移过去，规则才会真正生效。
+- 暂定团队流程（已由用户向同学说明）：功能一律从 `develop` 拉 `feature/姓名-模块`；完成后提 PR 到 `develop`；`main`、`test`、`pre-release` 不允许直接 push；`main` 只用于正式上架，由陶伊婷合并。
+- 本次只更新交接记录，没有修改功能代码。工作区仍保留任务 2（提醒动作）和任务 5（训练数据保留）的未提交改动，提交前先看 `git status`，并优先走功能分支，不要直接提交到 `develop`。
+
+## 2026-10-28 交接
 
 - 用户是**陶伊婷**（成员 6、法定代表人、项目技术负责人）。本轮做成员 6 的任务 2（弹窗提醒）和任务 5（服务端数据保留）。
 - 提醒动作已完成：日程通知有「稍后 10 分钟」，待办通知有「稍后 10 分钟 / 完成」；点「完成」会调用服务端完成待办，再清理普通提醒和稍后提醒。入口在 `app/src/App.tsx`、`app/src/modules/notifications/reminderActions.ts`、`scheduler.ts`、`listener.ts`。

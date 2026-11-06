@@ -140,7 +140,7 @@ public class SearchService {
         for (Task task : tasks) {
             items.add(new SearchResultItem(
                     TYPE_TASK, task.getId(), task.getTitle(), null,
-                    null, null,
+                    null, task.getLocationName(),
                     task.getDueAt(), task.getStatus(), task.getPriority(), null, null,
                     null, null, null));
         }

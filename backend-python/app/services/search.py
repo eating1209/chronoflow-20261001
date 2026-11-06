@@ -48,7 +48,9 @@ _TASK_SQL = text(
     " WHERE t.owner_identity_id = :identity"
     " AND t.deleted_at IS NULL"
     " AND (t.title ILIKE :pattern ESCAPE '\\'"
-    "      OR t.description ILIKE :pattern ESCAPE '\\')"
+    "      OR t.description ILIKE :pattern ESCAPE '\\'"
+    "      OR t.location_name ILIKE :pattern ESCAPE '\\'"
+    "      OR t.location_detail ILIKE :pattern ESCAPE '\\')"
     " ORDER BY t.due_at DESC NULLS LAST"
     " LIMIT :limit"
 )
@@ -294,7 +296,7 @@ class SearchService:
                 "title": row["title"],
                 "at": None,
                 "timezone": None,
-                "locationName": None,
+                "locationName": row["location_name"],
                 "dueAt": row["due_at"],
                 "status": row["status"],
                 "priority": row["priority"],

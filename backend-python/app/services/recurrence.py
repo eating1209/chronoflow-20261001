@@ -117,13 +117,17 @@ def _occurrence(
         "eventId": event["id"],
         "calendarId": event["calendar_id"],
         "title": title if title is not None else event["title"],
+        "description": event.get("description"),
         # 地点已结构化（spec §5.9）：实例同样带名称与地址，与 Java 版 EventOccurrence 对齐
         "locationName": event.get("location_name"),
         "locationDetail": event.get("location_detail"),
         "locationAddress": event.get("location_address"),
         "at": at,
+        "durationMinutes": event.get("duration_minutes"),
         "timezone": event.get("timezone"),
         "recurring": bool(event.get("rrule")),
         "occurrenceDate": occurrence_date,
         "modified": modified,
+        "done": False,
+        "completedAt": None,
     }

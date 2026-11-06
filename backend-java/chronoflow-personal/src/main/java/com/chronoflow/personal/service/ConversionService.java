@@ -52,6 +52,13 @@ public class ConversionService {
         task.setOwnerIdentityId(identityId);
         task.setTitle(event.getTitle());
         task.setDescription(event.getDescription());
+        task.setLocationName(event.getLocationName());
+        task.setLocationAddress(event.getLocationAddress());
+        task.setLocationDetail(event.getLocationDetail());
+        task.setLatitude(event.getLatitude());
+        task.setLongitude(event.getLongitude());
+        task.setPoiId(event.getPoiId());
+        task.setCoordinateSystem(event.getCoordinateSystem());
         task.setDueAt(event.getAt());
         task.setStatus(Task.STATUS_TODO);
         task.setPriority("NORMAL");
@@ -82,6 +89,13 @@ public class ConversionService {
         event.setSourceType(Event.SOURCE_PERSONAL);
         event.setTitle(task.getTitle());
         event.setDescription(task.getDescription());
+        event.setLocationName(task.getLocationName());
+        event.setLocationAddress(task.getLocationAddress());
+        event.setLocationDetail(task.getLocationDetail());
+        event.setLatitude(task.getLatitude());
+        event.setLongitude(task.getLongitude());
+        event.setPoiId(task.getPoiId());
+        event.setCoordinateSystem(task.getCoordinateSystem());
         event.setAt(start);
         event.setTimezone(calendar.getTimezone());
         event.setStatus(Event.STATUS_CONFIRMED);

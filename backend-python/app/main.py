@@ -38,7 +38,7 @@ from .routers import (
     system,
 )
 from .config import settings
-from .services import holiday_sync
+from .services import holiday_sync, training_data
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,7 @@ async def lifespan(_: FastAPI):
     sync_task = None
     if settings.holiday_sync_enabled:
         sync_task = asyncio.create_task(holiday_sync.run_forever())
+    retention_task = asyncio.create_task(training_data.run_forever())
     try:
         yield
     finally:
@@ -86,6 +87,9 @@ async def lifespan(_: FastAPI):
             sync_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sync_task
+        retention_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await retention_task
 
 app = FastAPI(
     title="时纪流 API（Python 版）",

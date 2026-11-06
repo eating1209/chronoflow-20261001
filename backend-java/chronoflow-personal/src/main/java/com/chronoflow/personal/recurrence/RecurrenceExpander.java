@@ -67,9 +67,11 @@ public class RecurrenceExpander {
             }
             return List.of(new EventOccurrence(
                     event.getId(), event.getCalendarId(), event.getTitle(),
+                    event.getDescription(),
                     event.getLocationName(), event.getLocationAddress(), event.getLocationDetail(),
                     eventAt,
-                    event.getTimezone(), false, null, false));
+                    event.getDurationMinutes(),
+                    event.getTimezone(), false, null, false, false, null));
         }
 
         ZoneId zone = resolveZone(event.getTimezone());
@@ -112,9 +114,11 @@ public class RecurrenceExpander {
 
             occurrences.add(new EventOccurrence(
                     event.getId(), event.getCalendarId(), title,
+                    event.getDescription(),
                     event.getLocationName(), event.getLocationAddress(), event.getLocationDetail(),
                     effectiveAt,
-                    event.getTimezone(), true, occurrenceDate, modified));
+                    event.getDurationMinutes(),
+                    event.getTimezone(), true, occurrenceDate, modified, false, null));
         }
 
         occurrences.sort(Comparator.comparing(EventOccurrence::at));

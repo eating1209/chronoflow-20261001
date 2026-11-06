@@ -16,6 +16,7 @@ from ..deps import current_identity
 from ..errors import ApiError, ErrorCode, envelope
 from ..security import IdentityPrincipal
 from ..services import vision, vision_text
+from ..services import training_data
 from ..services.storage import ImageStorage
 
 router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
@@ -73,4 +74,13 @@ async def parse_text(
     # complete_json 走的是同步 urllib：扔进线程，别把事件循环按住
     items = await asyncio.to_thread(
         vision_text.parse, payload.text if payload else None, today, timezone)
-    return envelope({"items": [item.to_dict() for item in items]})
+    rendered = [item.to_dict() for item in items]
+    if rendered:
+        # 采样失败只在服务层记一条不含原文的告警，不影响本次解析结果
+        await asyncio.to_thread(
+            training_data.record_sample,
+            principal.identity_id,
+            payload.text if payload else None,
+            rendered,
+        )
+    return envelope({"items": rendered})

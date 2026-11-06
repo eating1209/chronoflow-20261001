@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Collection;
@@ -68,6 +69,61 @@ public class TaskService {
         }
         recurrenceExpander.validate(rrule);
         return rrule;
+    }
+
+    /** 待办地点与日程保持同一套语义：地点名称空串表示清空，详细地址独立保存。 */
+    private static void applyLocation(Task task,
+                                      String locationName,
+                                      String locationAddress,
+                                      String locationDetail,
+                                      BigDecimal latitude,
+                                      BigDecimal longitude,
+                                      String poiId) {
+        if (locationName != null) {
+            if (!StringUtils.hasText(locationName)) {
+                task.setLocationName(null);
+                task.setLocationAddress(null);
+                task.setPoiId(null);
+                task.setLatitude(null);
+                task.setLongitude(null);
+                task.setCoordinateSystem(null);
+            } else {
+                task.setLocationName(locationName);
+                if (locationAddress != null) {
+                    task.setLocationAddress(blankToNull(locationAddress));
+                }
+                if (poiId != null) {
+                    task.setPoiId(blankToNull(poiId));
+                }
+                if (latitude != null || longitude != null) {
+                    applyCoordinates(task, latitude, longitude);
+                }
+            }
+        }
+        // 详细地址独立于地点：清空地图地点不该顺手抹掉「3 号楼 305」。
+        if (locationDetail != null) {
+            task.setLocationDetail(blankToNull(locationDetail));
+        }
+    }
+
+    private static void applyCoordinates(Task task, BigDecimal latitude, BigDecimal longitude) {
+        if (latitude == null || longitude == null) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "经纬度必须成对提供");
+        }
+        if (latitude.compareTo(BigDecimal.valueOf(-90)) < 0
+                || latitude.compareTo(BigDecimal.valueOf(90)) > 0
+                || longitude.compareTo(BigDecimal.valueOf(-180)) < 0
+                || longitude.compareTo(BigDecimal.valueOf(180)) > 0) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "经纬度超出有效范围");
+        }
+        task.setLatitude(latitude);
+        task.setLongitude(longitude);
+        // 客户端坐标来自国内地图服务，统一按 GCJ-02 标记（spec §5.9）。
+        task.setCoordinateSystem("GCJ-02");
+    }
+
+    private static String blankToNull(String value) {
+        return StringUtils.hasText(value) ? value : null;
     }
 
     /** 待办的图片附件（jsonb → 列表）。脏数据不该让整个列表接口 500。 */
@@ -175,6 +231,8 @@ public class TaskService {
         task.setEventId(request.eventId());
         task.setTitle(request.title());
         task.setDescription(request.description());
+        applyLocation(task, request.locationName(), request.locationAddress(), request.locationDetail(),
+                request.latitude(), request.longitude(), request.poiId());
         task.setDueAt(request.dueAt());
         task.setStatus(Task.STATUS_TODO);
         task.setPriority(priority);
@@ -194,6 +252,8 @@ public class TaskService {
         if (request.description() != null) {
             task.setDescription(request.description());
         }
+        applyLocation(task, request.locationName(), request.locationAddress(), request.locationDetail(),
+                request.latitude(), request.longitude(), request.poiId());
         // 先看「显式解绑」再看改绑：null 在 PATCH 里是「不修改」，解绑必须靠 clearEvent
         if (Boolean.TRUE.equals(request.clearEvent())) {
             task.setEventId(null);

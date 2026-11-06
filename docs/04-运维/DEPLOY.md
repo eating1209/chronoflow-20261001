@@ -228,7 +228,7 @@ bash scripts/publish_apk.sh \
 **验证发布是否生效**：
 
 ```bash
-curl -s https://chronocloud.top/api/v1/system/app-release          # versionCode 应为 14
+curl -s https://chronocloud.top/api/v1/system/app-release          # versionCode 应为 19
 curl -sI https://chronocloud.top/downloads/chronoflow-1.1.0.apk | head -3   # 200 + Content-Length
 ```
 
@@ -296,7 +296,7 @@ curl -sI https://chronocloud.top/downloads/chronoflow-1.1.0.apk | head -3   # 20
 
 ## 7. 交接清单（2026-10-02 收尾时）
 
-**当前状态**：仓库上架版本 **1.1.0**（versionCode 18），App 走 `https://chronocloud.top`；此前线上版本为 0.0.12（versionCode 13）。
+**当前状态**：仓库上架版本 **1.1.0**（versionCode 19），App 走 `https://chronocloud.top`；此前线上版本为 0.0.12（versionCode 13）。
 
 **已完成并验证**
 - 端侧 OCR = PaddleOCR PP-OCRv4（模型进包、构建期 16KB 硬卡）

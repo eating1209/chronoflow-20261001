@@ -63,6 +63,7 @@ public final class PersonalDtos {
             @Size(max = 64) String poiId,
             // 日程只有一个时间点（spec §4.1.2）。只说了哪天的，给当天 00:00
             @NotNull(message = "日程时间不能为空") OffsetDateTime at,
+            Integer durationMinutes,
             @Size(max = 64) String timezone,
             @Size(max = 512) String rrule,
             @Size(max = 16) String status,
@@ -84,6 +85,7 @@ public final class PersonalDtos {
             java.math.BigDecimal longitude,
             @Size(max = 64) String poiId,
             OffsetDateTime at,
+            Integer durationMinutes,
             @Size(max = 64) String timezone,
             @Size(max = 512) String rrule,
             @Size(max = 16) String status,
@@ -109,6 +111,7 @@ public final class PersonalDtos {
                                 String poiId,
                                 String coordinateSystem,
                                 OffsetDateTime at,
+                                Integer durationMinutes,
                                 String timezone,
                                 String rrule,
                                 String status,
@@ -128,10 +131,22 @@ public final class PersonalDtos {
                     event.getId(), event.getCalendarId(), event.getTitle(), event.getDescription(),
                     event.getLocationName(), event.getLocationAddress(), event.getLocationDetail(),
                     event.getLatitude(), event.getLongitude(), event.getPoiId(), event.getCoordinateSystem(),
-                    event.getAt(), event.getTimezone(),
+                    event.getAt(), event.getDurationMinutes(), event.getTimezone(),
                     event.getRrule(), event.getStatus(), event.getAvailability(), event.getColor(),
                     event.getPriority(), event.getCategory(), event.getUrl(), event.getTravelTimeMinutes());
         }
+    }
+
+    public record EventCompleteRequest(
+            @NotNull(message = "completed 不能为空") Boolean completed,
+            /** 重复日程必须给这一次的本地日期；非重复日程可空 */
+            LocalDate occurrenceDate) {
+    }
+
+    public record EventCompletionResponse(Long eventId,
+                                          LocalDate occurrenceDate,
+                                          boolean done,
+                                          OffsetDateTime completedAt) {
     }
 
     // ---------------------------------------------------------------- task
@@ -144,6 +159,12 @@ public final class PersonalDtos {
             @NotBlank(message = "待办标题不能为空")
             @Size(max = 200, message = "标题最长 200 个字符") String title,
             String description,
+            @Size(max = 128, message = "地点名称最长 128 个字符") String locationName,
+            @Size(max = 255) String locationAddress,
+            @Size(max = 255) String locationDetail,
+            java.math.BigDecimal latitude,
+            java.math.BigDecimal longitude,
+            @Size(max = 64) String poiId,
             OffsetDateTime dueAt,
             String priority,
             /** 图片附件的相对 URL 数组（§4.1.3）：日历页「拍照」直接带一张进来 */
@@ -154,6 +175,12 @@ public final class PersonalDtos {
     public record TaskUpdateRequest(
             @Size(max = 200) String title,
             String description,
+            @Size(max = 128) String locationName,
+            @Size(max = 255) String locationAddress,
+            @Size(max = 255) String locationDetail,
+            java.math.BigDecimal latitude,
+            java.math.BigDecimal longitude,
+            @Size(max = 64) String poiId,
             OffsetDateTime dueAt,
             /**
              * 显式清空截止时间（回到「待安排」）。
@@ -188,6 +215,13 @@ public final class PersonalDtos {
                                String eventTitle,
                                String title,
                                String description,
+                               String locationName,
+                               String locationAddress,
+                               String locationDetail,
+                               java.math.BigDecimal latitude,
+                               java.math.BigDecimal longitude,
+                               String poiId,
+                               String coordinateSystem,
                                OffsetDateTime dueAt,
                                String status,
                                OffsetDateTime completedAt,
@@ -209,7 +243,10 @@ public final class PersonalDtos {
             return new TaskResponse(
                     task.getId(), task.getCalendarId(), task.getParentTaskId(),
                     task.getEventId(), eventTitle,
-                    task.getTitle(), task.getDescription(), task.getDueAt(),
+                    task.getTitle(), task.getDescription(),
+                    task.getLocationName(), task.getLocationAddress(), task.getLocationDetail(),
+                    task.getLatitude(), task.getLongitude(), task.getPoiId(), task.getCoordinateSystem(),
+                    task.getDueAt(),
                     task.getStatus(), task.getCompletedAt(), task.getPriority(), images,
                     task.getRrule(),
                     task.getSortOrder());

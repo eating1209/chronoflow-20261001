@@ -3,6 +3,7 @@ package com.chronoflow.agent.web;
 import com.chronoflow.agent.service.AgentTextParseService;
 import com.chronoflow.agent.service.ParsedEventDraft;
 import com.chronoflow.auth.security.CurrentIdentity;
+import com.chronoflow.auth.service.TrainingDataService;
 import com.chronoflow.common.api.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,20 +28,26 @@ import java.util.List;
 public class AgentTextParseController {
 
     private final AgentTextParseService service;
+    private final TrainingDataService trainingData;
 
-    public AgentTextParseController(AgentTextParseService service) {
+    public AgentTextParseController(AgentTextParseService service, TrainingDataService trainingData) {
         this.service = service;
+        this.trainingData = trainingData;
     }
 
     @PostMapping("/parse-text")
     public ApiResponse<ParseTextResponse> parse(@RequestBody ParseTextRequest request) {
-        CurrentIdentity.require();
+        Long identityId = CurrentIdentity.require().identityId();
         String timezone = request == null || request.timezone() == null
                 ? "Asia/Shanghai" : request.timezone();
         String today = request == null || request.today() == null
                 ? LocalDate.now(ZoneId.of(timezone)).toString() : request.today();
         List<ParsedEventDraft> items = service.parse(
                 request == null ? null : request.text(), today, timezone);
+        if (!items.isEmpty()) {
+            // 采样失败不影响解析：TrainingDataService 自己吞掉异常并返回 false
+            trainingData.captureVisionText(identityId, request == null ? null : request.text(), items);
+        }
         return ApiResponse.ok(new ParseTextResponse(items));
     }
 

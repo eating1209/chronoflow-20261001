@@ -235,6 +235,92 @@ def test_parse_text_reports_unavailable_when_model_missing(client, model) -> Non
     assert body["code"] == 90002
 
 
+def test_training_samples_require_opt_in_and_are_redacted(client, model) -> None:
+    """任务 5：默认不采样；同意后只存脱敏文字；关闭开关立即清空。"""
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+
+    tokens = register(client, "13900007012")
+    identity_id = tokens["identity"]["identityId"]
+    model.last_json = '{"items":[{"title":"张老师安排会议","timezone":"Asia/Shanghai"}]}'
+    payload = {
+        "text": "联系人：张三，电话 13800138000；请张老师安排会议",
+        "today": "2026-09-30",
+        "timezone": "Asia/Shanghai",
+    }
+
+    status = client.get("/api/v1/me/training-data", headers=auth(tokens)).json()
+    assert status["data"] == {"enabled": False, "retentionDays": 90}, status
+
+    # 默认关闭时解析照常返回，但不应产生任何训练样本
+    parsed = client.post("/api/v1/ai/events/parse-text", json=payload, headers=auth(tokens)).json()
+    assert parsed["code"] == 0, parsed
+    with SessionLocal() as session:
+        assert session.execute(
+            text("SELECT count(*) FROM training_sample WHERE identity_id = :id"),
+            {"id": identity_id},
+        ).scalar_one() == 0
+
+    enabled = client.put(
+        "/api/v1/me/training-data", json={"enabled": True}, headers=auth(tokens)
+    ).json()
+    assert enabled["data"] == {"enabled": True, "retentionDays": 90}, enabled
+    parsed = client.post("/api/v1/ai/events/parse-text", json=payload, headers=auth(tokens)).json()
+    assert parsed["code"] == 0, parsed
+
+    with SessionLocal() as session:
+        row = session.execute(
+            text(
+                "SELECT redacted_text, parsed_json::text AS parsed_json, created_at, expires_at"
+                " FROM training_sample WHERE identity_id = :id"
+            ),
+            {"id": identity_id},
+        ).mappings().one()
+    combined = row["redacted_text"] + row["parsed_json"]
+    assert "13800138000" not in combined
+    assert "张三" not in combined
+    assert "[手机号]" in row["redacted_text"]
+    assert "[姓名]" in row["redacted_text"]
+    assert 89 <= (row["expires_at"] - row["created_at"]).days <= 90
+
+    disabled = client.put(
+        "/api/v1/me/training-data", json={"enabled": False}, headers=auth(tokens)
+    ).json()
+    assert disabled["data"]["enabled"] is False, disabled
+    with SessionLocal() as session:
+        assert session.execute(
+            text("SELECT count(*) FROM training_sample WHERE identity_id = :id"),
+            {"id": identity_id},
+        ).scalar_one() == 0
+
+
+def test_expired_training_samples_are_purged(client, model) -> None:
+    """到期删除不是只写在文档里：清理函数必须真的把过期行删掉。"""
+    from sqlalchemy import text
+
+    from app.db import SessionLocal
+    from app.services import training_data
+
+    tokens = register(client, "13900007013")
+    identity_id = tokens["identity"]["identityId"]
+    client.put("/api/v1/me/training-data", json={"enabled": True}, headers=auth(tokens))
+    assert training_data.record_sample(
+        identity_id, "联系人：李四 13900139000", [{"title": "李老师开会"}]
+    )
+    with SessionLocal() as session:
+        session.execute(
+            text("UPDATE training_sample SET expires_at = now() - interval '1 second'")
+        )
+        session.commit()
+    assert training_data.purge_expired() >= 1
+    with SessionLocal() as session:
+        assert session.execute(
+            text("SELECT count(*) FROM training_sample WHERE identity_id = :id"),
+            {"id": identity_id},
+        ).scalar_one() == 0
+
+
 def test_agent_tools_are_personal_only(client) -> None:
     """工具白名单：只有五个 my_ 前缀的工具，且都在个人日程范围内。"""
     from app.services import agent_tools

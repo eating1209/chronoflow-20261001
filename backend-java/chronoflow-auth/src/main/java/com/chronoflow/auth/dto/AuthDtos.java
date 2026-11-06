@@ -142,6 +142,13 @@ public final class AuthDtos {
             @NotNull(message = "prefs 不能为空") Map<String, Boolean> prefs) {
     }
 
+    /** 训练用途单独同意开关；必须显式传 true / false，避免缺字段被当成同意。 */
+    public record TrainingDataRequest(@NotNull(message = "enabled 不能为空") Boolean enabled) {
+    }
+
+    public record TrainingDataView(boolean enabled, int retentionDays) {
+    }
+
     public record DeviceResponse(String deviceId, OffsetDateTime issuedAt) {
     }
 }

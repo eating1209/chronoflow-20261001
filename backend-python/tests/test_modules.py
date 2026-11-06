@@ -77,6 +77,19 @@ def list_all_events(client, tokens, **params) -> list[dict]:
     return response["data"]
 
 
+def complete_event(
+    client, tokens, event_id: int, completed: bool, occurrence_date: str | None = None
+) -> dict:
+    payload: dict = {"completed": completed}
+    if occurrence_date is not None:
+        payload["occurrenceDate"] = occurrence_date
+    response = client.post(
+        f"/api/v1/events/{event_id}/complete", json=payload, headers=auth(tokens)
+    ).json()
+    assert response["code"] == 0, response
+    return response["data"]
+
+
 def test_all_events_include_past_series_once_and_support_search(client) -> None:
     """全部日程（spec §4.1.6）：过去的也要有、重复序列只出现一次、可按关键字搜。"""
     tokens = register(client, "13900002801")
@@ -632,6 +645,57 @@ def test_weekly_recurrence_expands_in_event_timezone(client) -> None:
         assert (local.hour, local.minute) == (9, 0)
 
 
+def test_single_event_completion_round_trips(client) -> None:
+    tokens = register(client, "13900002803")
+    event = create_event(
+        client,
+        tokens,
+        {"title": "提交材料", "at": "2026-10-05T18:00:00+08:00"},
+    )
+    set_reminders(client, tokens, "EVENT", event["id"], [15])
+
+    completed = complete_event(client, tokens, event["id"], True)
+    assert completed["done"] is True
+    assert completed["completedAt"] is not None
+    occurrences = range_query(
+        client, tokens, "2026-10-05T00:00:00+08:00", "2026-10-06T00:00:00+08:00"
+    )
+    assert occurrences[0]["done"] is True
+    assert reminder_schedule(
+        client, tokens, "2026-10-05T00:00:00+08:00", "2026-10-06T00:00:00+08:00"
+    ) == []
+
+    reopened = complete_event(client, tokens, event["id"], False)
+    assert reopened["done"] is False
+    occurrences = range_query(
+        client, tokens, "2026-10-05T00:00:00+08:00", "2026-10-06T00:00:00+08:00"
+    )
+    assert occurrences[0]["done"] is False
+    assert len(
+        reminder_schedule(
+            client, tokens, "2026-10-05T00:00:00+08:00", "2026-10-06T00:00:00+08:00"
+        )
+    ) == 1
+
+
+def test_recurring_event_completion_is_per_occurrence(client) -> None:
+    tokens = register(client, "13900002804")
+    event = create_event(client, tokens, WEEKLY_PAYLOAD)
+    complete_event(client, tokens, event["id"], True, "2026-10-07")
+
+    occurrences = range_query(
+        client, tokens, "2026-10-05T00:00:00+08:00", "2026-10-10T00:00:00+08:00"
+    )
+    assert [item["done"] for item in occurrences] == [False, True, False]
+
+    missing_date = client.post(
+        f"/api/v1/events/{event['id']}/complete",
+        json={"completed": True},
+        headers=auth(tokens),
+    ).json()
+    assert missing_date["code"] == ErrorCode.PARAM_INVALID
+
+
 def test_this_scope_modifies_only_one_occurrence(client) -> None:
     tokens = register(client, "13900002002")
     event = create_event(client, tokens, WEEKLY_PAYLOAD)
@@ -766,6 +830,55 @@ def test_task_update_and_clear_due_at(client) -> None:
     )
     detail = client.get(f"/api/v1/tasks/{created['id']}", headers=auth(tokens)).json()["data"]
     assert detail["dueAt"] is None
+
+
+def test_task_location_round_trip_and_clear(client) -> None:
+    """待办也支持结构化地点；空串清空时名称、坐标和 POI 一起消失。"""
+    tokens = register(client, "13800000305")
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "交材料",
+            "locationName": "行政楼",
+            "locationAddress": "海大路 1 号",
+            "locationDetail": "305 办公室",
+            "latitude": 30.1234567,
+            "longitude": 122.1234567,
+            "poiId": "poi-1",
+        },
+        headers=auth(tokens),
+    ).json()["data"]
+    assert created["locationName"] == "行政楼"
+    assert created["locationDetail"] == "305 办公室"
+    assert created["coordinateSystem"] == "GCJ-02"
+
+    edited = client.patch(
+        f"/api/v1/tasks/{created['id']}",
+        json={
+            "locationName": "图书馆",
+            "locationDetail": "二楼服务台",
+            "latitude": 30.2,
+            "longitude": 122.2,
+        },
+        headers=auth(tokens),
+    ).json()["data"]
+    assert edited["locationName"] == "图书馆"
+    assert edited["locationDetail"] == "二楼服务台"
+
+    cleared = client.patch(
+        f"/api/v1/tasks/{created['id']}",
+        json={
+            "locationName": "",
+            "locationAddress": "",
+            "locationDetail": "",
+            "poiId": "",
+        },
+        headers=auth(tokens),
+    ).json()["data"]
+    assert cleared["locationName"] is None
+    assert cleared["locationDetail"] is None
+    assert cleared["latitude"] is None
+    assert cleared["coordinateSystem"] is None
 
 
 def test_task_images_are_stored_and_validated(client) -> None:

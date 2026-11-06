@@ -40,6 +40,12 @@ public class Identity {
     @TableField(typeHandler = JsonbStringTypeHandler.class)
     private String notificationPrefs;
 
+    /** 是否单独同意把脱敏后的 OCR 文字用于模型改进；默认关闭。 */
+    private Boolean trainingDataOptIn;
+
+    /** 最近一次同意训练用途的时间；关闭时置空。 */
+    private OffsetDateTime trainingDataOptedInAt;
+
     private OffsetDateTime createdAt;
 
     private OffsetDateTime updatedAt;
@@ -114,6 +120,22 @@ public class Identity {
 
     public void setNotificationPrefs(String notificationPrefs) {
         this.notificationPrefs = notificationPrefs;
+    }
+
+    public Boolean getTrainingDataOptIn() {
+        return trainingDataOptIn;
+    }
+
+    public void setTrainingDataOptIn(Boolean trainingDataOptIn) {
+        this.trainingDataOptIn = trainingDataOptIn;
+    }
+
+    public OffsetDateTime getTrainingDataOptedInAt() {
+        return trainingDataOptedInAt;
+    }
+
+    public void setTrainingDataOptedInAt(OffsetDateTime trainingDataOptedInAt) {
+        this.trainingDataOptedInAt = trainingDataOptedInAt;
     }
 
     public OffsetDateTime getCreatedAt() {

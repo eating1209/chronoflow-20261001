@@ -57,6 +57,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -919,6 +920,59 @@ class AgentModuleTest {
         // 结构化输出 + 温度 0：抽取要的是稳定，不是想象力
         assertThat(request.jsonMode()).isTrue();
         assertThat(request.temperature()).isEqualTo(0.0);
+    }
+
+    @Test
+    @DisplayName("任务 5：训练样本默认不采、脱敏后入库、关闭开关立即清空")
+    void trainingSamplesRequireOptInAndRedactPersonalData() throws Exception {
+        JsonNode account = registerAccount("13800000636", "采样用户");
+        String token = account.path("data").path("accessToken").asText();
+        long identityId = account.path("data").path("identity").path("identityId").asLong();
+        String parseBody = "{\"text\":\"联系人：张三，电话 13800138000；请张老师安排会议\","
+                + "\"today\":\"2026-09-30\",\"timezone\":\"Asia/Shanghai\"}";
+
+        mockMvc.perform(get("/api/v1/me/training-data").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.enabled").value(false))
+                .andExpect(jsonPath("$.data.retentionDays").value(90));
+
+        // 默认关闭：解析照常可用，但不产生样本
+        model.enqueue("{\"items\":[{\"title\":\"张老师安排会议\",\"timezone\":\"Asia/Shanghai\"}]}",
+                List.of());
+        postJsonWithBearer("/api/v1/ai/events/parse-text", token, parseBody);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM training_sample WHERE identity_id = ?", Integer.class, identityId))
+                .isZero();
+
+        mockMvc.perform(put("/api/v1/me/training-data")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"enabled\":true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.enabled").value(true))
+                .andExpect(jsonPath("$.data.retentionDays").value(90));
+
+        model.enqueue("{\"items\":[{\"title\":\"张老师安排会议\",\"timezone\":\"Asia/Shanghai\"}]}",
+                List.of());
+        postJsonWithBearer("/api/v1/ai/events/parse-text", token, parseBody);
+        var row = jdbcTemplate.queryForMap(
+                "SELECT redacted_text, parsed_json::text AS parsed_json,"
+                        + " EXTRACT(EPOCH FROM (expires_at - created_at)) / 86400 AS days"
+                        + " FROM training_sample WHERE identity_id = ?", identityId);
+        String stored = row.get("redacted_text") + row.get("parsed_json").toString();
+        assertThat(stored).doesNotContain("13800138000").doesNotContain("张三");
+        assertThat(stored).contains("[手机号]").contains("[姓名]");
+        assertThat(((Number) row.get("days")).doubleValue()).isBetween(89.9, 90.1);
+
+        mockMvc.perform(put("/api/v1/me/training-data")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"enabled\":false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.enabled").value(false));
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM training_sample WHERE identity_id = ?", Integer.class, identityId))
+                .isZero();
     }
 
     @Test

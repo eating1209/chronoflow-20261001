@@ -74,7 +74,12 @@ public class JdbcAccountDataPurger implements AccountDataPurger {
         // 7) 意见反馈：含正文与图片，属于该账号的个人信息，一并删除
         jdbcTemplate.update("DELETE FROM feedback WHERE account_id = ?", accountId);
 
-        // 8) 登录日志刻意**不删**：按《网络安全法》第二十一条要留存不少于 6 个月，
+        // 8) 训练样本：注销后不再具备任何训练用途的合法性，立即删除
+        jdbcTemplate.update(
+                "DELETE FROM training_sample WHERE identity_id IN (SELECT id FROM identity WHERE account_id = ?)",
+                accountId);
+
+        // 9) 登录日志刻意**不删**：按《网络安全法》第二十一条要留存不少于 6 个月，
         //    而账号行已经在 AccountService 里匿名化，日志里也不含手机号。
         //    这条注释是给下一个 agent 的：别把「没删 login_log」当成漏掉。
     }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { userFacingError } from '../../../shared/errors';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { EventDetail } from '../../../shared/api';
 import { Card, Screen, showToast } from '../../../shared/ui';
@@ -15,6 +15,7 @@ import {
   FormRowText,
   FormTextArea,
   LargeSegmentedControl,
+  useKeyboardAwareScroll,
 } from '../../../shared/ui';
 import { useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
 import {
@@ -32,6 +33,7 @@ import {
   type EventDraft,
 } from '../domain/eventDraft';
 import { buildRrule, describeRecurrence, parseRrule, type Recurrence } from '../domain/recurrence';
+import { removeSystemCalendarEvent, syncEventToSystemCalendar } from '../systemCalendar';
 import {
   describeReminderSound,
   describeReminders,
@@ -116,6 +118,7 @@ export function EventEditorScreen({
 }) {
   const theme = useAppTheme();
   const { api, reminders } = useRuntime();
+  const { scrollRef, keyboardHeight, scrollToEnd } = useKeyboardAwareScroll();
   const { notificationEnabled, reminderSound: defaultReminderSound } = useAppSessionState();
   const isEdit = typeof eventId === 'number';
   /** 草稿模式：编辑的是「还没落库的识别结果」，不是服务端上的一条日程 */
@@ -286,12 +289,13 @@ export function EventEditorScreen({
         return;
       }
       let savedId: number;
+      let savedDetail: EventDetail;
       const payload = buildCreatePayload(dateKey, draft);
       if (eventId === undefined) {
-        const created = await api.createEvent(payload);
-        savedId = created.id;
+        savedDetail = await api.createEvent(payload);
+        savedId = savedDetail.id;
       } else {
-        await api.updateEvent(eventId, {
+        savedDetail = await api.updateEvent(eventId, {
           ...buildUpdatePayload(dateKey, draft),
           scope,
           occurrenceDate: scope === 'THIS' ? occurrenceDate ?? null : null,
@@ -337,6 +341,8 @@ export function EventEditorScreen({
         // 设置存下了、但通知响不了，必须说清楚，否则用户会以为「提醒坏了」
         Alert.alert('提醒不会响', '系统还没允许本应用发送通知，请在系统设置里打开通知权限。');
       }
+      // 单向导出到手机自带日历；失败不影响这条日程本身已经保存成功。
+      await syncEventToSystemCalendar(savedDetail);
       showToast(isEdit ? '日程已更新' : '日程已添加');
       onSaved(dateKey);
     } catch (cause) {
@@ -373,6 +379,10 @@ export function EventEditorScreen({
       setError(null);
       try {
         await api.deleteEvent(eventId, scope, scope === 'THIS' ? occurrenceDate ?? undefined : undefined);
+        // 只有整个系列删掉时才删系统日历里的那条；「仅此一次」不影响导出的系列。
+        if (scope === 'ALL') {
+          await removeSystemCalendarEvent(eventId);
+        }
         /**
          * 删除的日程不能留着提醒在系统里响（用户会以为是幽灵通知）：
          * 重排一次即可 —— 服务端已经不再返回它，对齐时本机那条会被取消。
@@ -443,8 +453,14 @@ export function EventEditorScreen({
       ) : null}
 
       <ScrollView
-        contentContainerStyle={{ padding: theme.spacing.md, paddingBottom: theme.spacing.xxl }}
+        ref={scrollRef}
+        contentContainerStyle={{
+          padding: theme.spacing.md,
+          // 键盘高度直接补到滚动区底部：即使系统没有缩窗口，也能把备注滚到键盘上方。
+          paddingBottom: theme.spacing.xxl + keyboardHeight,
+        }}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
       >
         <Card>
           <FormInput
@@ -511,6 +527,7 @@ export function EventEditorScreen({
                 value={draft.locationDetail}
                 placeholder="3 号楼 305（选填）"
                 onChangeText={(locationDetail) => patch({ locationDetail })}
+                onFocus={scrollToEnd}
               />
             </FormRow>
           </Card>
@@ -528,6 +545,7 @@ export function EventEditorScreen({
               value={draft.description}
               placeholder="添加备注、议程…"
               onChangeText={(description) => patch({ description })}
+              onFocus={scrollToEnd}
             />
           </Card>
         </View>

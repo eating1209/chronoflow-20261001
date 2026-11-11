@@ -84,6 +84,35 @@ function gatewayFor(
       reject,
     };
   }
+  if (kind === 'calendar') {
+    /**
+     * 系统日历是 Android 的运行时权限，读写必须一起拿到：
+     * 读用来找到可写日历，写用来插入 / 更新 / 删除我们自己导出的那几条。
+     * iOS 的系统日历要走 EventKit，不在这一版范围内；这里如实返回 false。
+     */
+    if (Platform.OS !== 'android') {
+      return {
+        current: async () => false,
+        request: async () => false,
+        explain,
+        reject,
+      };
+    }
+    const read = 'android.permission.READ_CALENDAR';
+    const write = 'android.permission.WRITE_CALENDAR';
+    return {
+      current: async () => (
+        (await PermissionsAndroid.check(read)) && (await PermissionsAndroid.check(write))
+      ),
+      request: async () => {
+        const result = await PermissionsAndroid.requestMultiple([read, write]);
+        return result[read] === PermissionsAndroid.RESULTS.GRANTED
+          && result[write] === PermissionsAndroid.RESULTS.GRANTED;
+      },
+      explain,
+      reject,
+    };
+  }
   if (kind === 'microphone') {
     /**
      * Android 直接用框架的 PermissionsAndroid：录音权限就是 `RECORD_AUDIO`，

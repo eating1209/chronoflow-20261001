@@ -224,10 +224,12 @@ export function FormRowText({
   value,
   placeholder,
   onChangeText,
+  onFocus,
 }: {
   value: string;
   placeholder: string;
   onChangeText: (next: string) => void;
+  onFocus?: () => void;
 }) {
   const theme = useAppTheme();
   return (
@@ -236,6 +238,7 @@ export function FormRowText({
       onChangeText={onChangeText}
       placeholder={placeholder}
       placeholderTextColor={theme.color.textTertiary}
+      onFocus={onFocus}
       style={{ color: theme.color.textPrimary, fontSize: 15, paddingVertical: 2 }}
     />
   );
@@ -246,10 +249,12 @@ export function FormTextArea({
   value,
   placeholder,
   onChangeText,
+  onFocus,
 }: {
   value: string;
   placeholder: string;
   onChangeText: (next: string) => void;
+  onFocus?: () => void;
 }) {
   const theme = useAppTheme();
   return (
@@ -258,6 +263,7 @@ export function FormTextArea({
       onChangeText={onChangeText}
       placeholder={placeholder}
       placeholderTextColor={theme.color.textTertiary}
+      onFocus={onFocus}
       multiline
       accessibilityLabel={placeholder}
       style={{

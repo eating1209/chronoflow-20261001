@@ -22,7 +22,7 @@
  * 通知栏 / 锁屏任务总览。两件事都走本地通知，因此必须在申请前说明用途，
  * 隐私政策 §9.2 的权限清单也要同步列出。
  */
-export type PermissionKind = 'photo' | 'camera' | 'location' | 'notification' | 'microphone';
+export type PermissionKind = 'photo' | 'camera' | 'location' | 'notification' | 'microphone' | 'calendar';
 
 export interface PermissionRationale {
   /** 说明弹窗标题 */
@@ -68,6 +68,14 @@ export const PERMISSION_RATIONALE: Record<PermissionKind, PermissionRationale> =
       + '锁屏是否展示通知内容，还取决于您的系统锁屏设置。\n\n'
       + '您也可以选择「不允许」，日程与待办照常使用，只是通知栏、锁屏和到点提醒不会出现。',
     deniedHint: '未获得通知权限，日程与待办照常使用，其他功能不受影响；如需通知栏 / 锁屏总览或到点提醒，可在系统设置里打开通知。',
+  },
+  calendar: {
+    title: '需要访问系统日历',
+    message:
+      '用于把您在时纪流里新建、修改的日程，单向写入手机自带的日历（例如华为日历、OPPO 日历）。\n\n'
+      + '我们只写入由时纪流创建的那些日程；不会读取、修改或删除您自己记在系统日历里的内容。\n\n'
+      + '您也可以选择「不允许」，时纪流内的日程与提醒照常使用。',
+    deniedHint: '未获得日历权限，时纪流内的日程与提醒照常使用，其他功能不受影响。',
   },
   microphone: {
     title: '需要使用麦克风',

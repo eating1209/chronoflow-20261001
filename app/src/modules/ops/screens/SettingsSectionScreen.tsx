@@ -14,7 +14,8 @@ import { useFocusEffect } from '@react-navigation/native';
 
 import { EditorHeader, SegmentedControl } from '../../../shared/ui';
 import { Chevron, ListGroup, ListRow, ListSeparator } from '../../../shared/ui';
-import { Screen } from '../../../shared/ui';
+import { Screen, showToast } from '../../../shared/ui';
+import { userFacingError } from '../../../shared/errors';
 import { useAppScheme, useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
 import { useFeatureFlags } from '../featureFlags';
 import {
@@ -27,6 +28,13 @@ import { LEGAL_DOCS, OPERATOR_NAME, type LegalDoc } from '../../compliance/pure'
 import { maskPhone } from '../../identity';
 import type { TrainingDataPreference } from '../../../api/endpoints';
 import { askPermission } from '../../../shared/permission';
+import {
+  backfillSystemCalendar,
+  clearSystemCalendarEvents,
+  setSystemCalendarEnabled,
+  systemCalendarAvailable,
+  systemCalendarEnabled,
+} from '../../calendar/systemCalendar';
 import {
   clearTaskBarNotification,
   requestTaskBarOverlayPermission,
@@ -108,6 +116,8 @@ export function SettingsSectionScreen({
   const [overlayEnabled, setOverlayEnabled] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const overlayRequestPending = useRef(false);
+  const [calendarSyncOn, setCalendarSyncOn] = useState(false);
+  const [calendarSyncBusy, setCalendarSyncBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -115,6 +125,11 @@ export function SettingsSectionScreen({
       void taskBarOverlayEnabled().then((enabled) => {
         if (alive) {
           setOverlayEnabled(enabled);
+        }
+      });
+      void systemCalendarEnabled().then((enabled) => {
+        if (alive) {
+          setCalendarSyncOn(enabled);
         }
       });
     }
@@ -384,6 +399,76 @@ export function SettingsSectionScreen({
                       })();
                     }}
                     accessibilityLabel="顶部任务小条"
+                    trackColor={{ false: theme.color.border, true: theme.color.accent }}
+                    thumbColor={theme.color.surfaceRaised}
+                  />
+                }
+              />
+              <ListSeparator inset={52} />
+            </>
+          ) : null}
+          {Platform.OS === 'android' && systemCalendarAvailable() ? (
+            <>
+              <ListRow
+                leading={<RowIcon name="calendar-outline" />}
+                title="同步到系统日历"
+                subtitle={
+                  calendarSyncBusy
+                    ? '正在把日程写入手机自带日历…'
+                    : calendarSyncOn
+                      ? '已开启：新建和修改的日程会单向写入手机日历'
+                      : '单向导出到手机自带日历，不读取、不修改你原来的日程'
+                }
+                trailing={
+                  <Switch
+                    value={calendarSyncOn}
+                    disabled={calendarSyncBusy}
+                    onValueChange={(next) => {
+                      if (calendarSyncBusy) {
+                        return;
+                      }
+                      if (!next) {
+                        setCalendarSyncOn(false);
+                        void setSystemCalendarEnabled(false);
+                        void clearSystemCalendarEvents().then((cleared) => {
+                          showToast(
+                            cleared
+                              ? '已关闭，并移除由时纪流写入的日程'
+                              : '已关闭；部分条目未能移除（可能缺少日历权限）',
+                          );
+                        });
+                        return;
+                      }
+                      setCalendarSyncBusy(true);
+                      void (async () => {
+                        try {
+                          const granted = await askPermission('calendar');
+                          if (!granted) {
+                            return;
+                          }
+                          await setSystemCalendarEnabled(true);
+                          setCalendarSyncOn(true);
+                          const result = await backfillSystemCalendar(api);
+                          showToast(`已同步 ${result.exported} 条日程到系统日历`);
+                          if (result.failed > 0) {
+                            Alert.alert(
+                              '部分日程没有同步',
+                              `有 ${result.failed} 条写入失败。已同步成功的条目不受影响，之后新建或修改的日程仍会继续写入。`,
+                            );
+                          }
+                        } catch (cause) {
+                          await setSystemCalendarEnabled(false);
+                          setCalendarSyncOn(false);
+                          Alert.alert(
+                            '没有开启系统日历同步',
+                            userFacingError(cause, '请检查日历权限后重试'),
+                          );
+                        } finally {
+                          setCalendarSyncBusy(false);
+                        }
+                      })();
+                    }}
+                    accessibilityLabel="同步到系统日历"
                     trackColor={{ false: theme.color.border, true: theme.color.accent }}
                     thumbColor={theme.color.surfaceRaised}
                   />

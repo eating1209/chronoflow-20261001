@@ -23,3 +23,14 @@ export type {
   ReminderSelection,
   ReminderSoundChoice,
 } from './pure';
+
+export {
+  backfillSystemCalendar,
+  clearSystemCalendarEvents,
+  removeSystemCalendarEvent,
+  setSystemCalendarEnabled,
+  syncEventToSystemCalendar,
+  systemCalendarAvailable,
+  systemCalendarDiagnostics,
+  systemCalendarEnabled,
+} from './systemCalendar';

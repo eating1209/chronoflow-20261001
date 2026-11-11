@@ -19,6 +19,7 @@ import {
 } from '../shared/auth';
 import type { TokenResponse } from '../shared/api';
 import type { AppRuntime } from '../runtime';
+import { clearTaskBarNotification } from '../modules/tasks/taskBarNotification';
 import { createApiClient, type ApiClient } from '../shared/api';
 import { createEndpoints, type Endpoints } from '../api/endpoints';
 import { createTheme, type AppTheme } from '../shared/theme';
@@ -344,6 +345,9 @@ export function AppProvider({
         await persist([]);
         setActiveOrgIdentityId(null);
         setSession(null);
+        // 组件卸载不再清通知（否则划掉后台也会被清），所以退出登录必须在这里
+        // 主动把上一个账号的任务从通知栏 / 锁屏 / 顶部小条上撤掉。
+        await clearTaskBarNotification();
       },
     }),
     [theme, scheme, runtime, session, orgAccounts, activeOrgIdentityId, orgFocusDateKey,

@@ -545,8 +545,9 @@ function MainStack() {
     return () => {
       cancelled = true;
       subscription.remove();
-      // 退出登录 / 组件卸载后不能把个人任务继续留在锁屏上
-      void clearTaskBarNotification();
+      // 注意：这里**不能**清通知。App 被从最近任务划掉、Activity 销毁时也会走到
+      // 这个 cleanup；清了就会出现「划掉后台，任务条变 0 项、通知卡消失」。
+      // 真正的退出登录在 AppContext.signOut 里清理，隐私不会留在锁屏上。
     };
   }, [api, setTaskBarEnabled, taskBarEnabled]);
 

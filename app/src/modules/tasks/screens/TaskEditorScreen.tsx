@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { userFacingError } from '../../../shared/errors';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { Card, Screen, showToast } from '../../../shared/ui';
 import {
@@ -11,6 +11,7 @@ import {
   FormRowText,
   FormTextArea,
   LargeSegmentedControl,
+  useKeyboardAwareScroll,
 } from '../../../shared/ui';
 import { useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
 import { WheelDatePicker, WheelLayer, WheelTimePicker } from '../../calendar/components';
@@ -89,6 +90,7 @@ export function TaskEditorScreen({
 }) {
   const theme = useAppTheme();
   const { api, reminders } = useRuntime();
+  const { scrollRef, keyboardHeight, scrollToEnd } = useKeyboardAwareScroll();
   const { notificationEnabled, reminderSound: defaultReminderSound } = useAppSessionState();
   const isEdit = typeof taskId === 'number';
 
@@ -322,8 +324,13 @@ export function TaskEditorScreen({
       ) : null}
 
       <ScrollView
-        contentContainerStyle={{ padding: theme.spacing.md, paddingBottom: theme.spacing.xxl }}
+        ref={scrollRef}
+        contentContainerStyle={{
+          padding: theme.spacing.md,
+          paddingBottom: theme.spacing.xxl + keyboardHeight,
+        }}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
       >
         <Card>
           <FormInput
@@ -403,6 +410,7 @@ export function TaskEditorScreen({
                 value={draft.locationDetail}
                 placeholder="3 号楼 305（选填）"
                 onChangeText={(locationDetail) => patch({ locationDetail })}
+                onFocus={scrollToEnd}
               />
             </FormRow>
           </Card>
@@ -426,6 +434,7 @@ export function TaskEditorScreen({
               value={draft.description}
               placeholder="添加备注…"
               onChangeText={(description) => patch({ description })}
+              onFocus={scrollToEnd}
             />
           </Card>
         </View>

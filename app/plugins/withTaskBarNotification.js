@@ -22,6 +22,9 @@ const REQUIRED_PERMISSIONS = [
   'android.permission.SYSTEM_ALERT_WINDOW',
   'android.permission.FOREGROUND_SERVICE',
   'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
+  // 系统日历单向导出（CalendarSyncModule）：读用来找可写日历，写用来维护我们自己的条目。
+  'android.permission.READ_CALENDAR',
+  'android.permission.WRITE_CALENDAR',
 ];
 
 function copyTree(source, destination) {

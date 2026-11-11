@@ -90,13 +90,13 @@ describe('合规文本入口（规范 §一）', () => {
   });
 
   it('隐私政策版本号是个显式常量，升版必须改这里', () => {
-    expect(PRIVACY_POLICY_VERSION).toBe('1.3');
+    expect(PRIVACY_POLICY_VERSION).toBe('1.4');
   });
 });
 
 describe('权限申请（规范 §四 D6）', () => {
-  it('四类权限都要有话术，且必须说清「拒绝了也能用」', () => {
-    for (const kind of ['photo', 'location', 'notification', 'microphone'] as const) {
+  it('每类权限都要有话术，且必须说清「拒绝了也能用」', () => {
+    for (const kind of ['photo', 'location', 'notification', 'microphone', 'calendar'] as const) {
       const rationale = PERMISSION_RATIONALE[kind];
       expect(rationale.title.length).toBeGreaterThan(0);
       expect(rationale.message).toContain('不允许');

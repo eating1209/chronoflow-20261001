@@ -8,6 +8,7 @@ import { EditorHeader } from '../../../shared/ui';
 import { useAppTheme, useRuntime } from '../../../context/AppContext';
 import { APP_TIMEZONE, buildCreatePayload, type EventDraft } from '../../calendar/pure';
 import { draftDateKey, draftToEventDraft, type RecognizedDraft } from '../domain/vision';
+import { syncEventToSystemCalendar } from '../../calendar/systemCalendar';
 
 /**
  * 「图片识别日程」的**确认页**（spec §4.1.9）。
@@ -105,10 +106,11 @@ export function EventImportScreen({
         continue;
       }
       try {
-        await api.createEvent({
+        const created = await api.createEvent({
           ...buildCreatePayload(row.dateKey, row.draft),
           timezone: APP_TIMEZONE,
         });
+        await syncEventToSystemCalendar(created);
       } catch (cause) {
         failed.push(row);
         failures.push(`${row.draft.title}：${userFacingError(cause, '创建失败')}`);

@@ -15,8 +15,10 @@ export {
   draftsFromItems,
   draftDateKey,
   draftToEventDraft,
+  inferDraftKind,
   normalizeTime,
   type RecognizedDraft,
+  type RecognizedDraftKind,
 } from './domain/vision';
 
 export {
@@ -26,7 +28,18 @@ export {
   warmUpOcrEngine,
   type OcrEngine,
 } from './ocr/onDevice';
+export { recognizeScheduleImage, type ImageRecognitionResult } from './pipeline';
+export {
+  consumeSharedImage,
+  discardSharedImage,
+  subscribeSharedImages,
+  type ConsumedShareImage,
+} from './shareImport';
 
 export { registerBundledOcrEngine } from './ocr/register';
 
-export { EventImportScreen, type DraftEdit } from './screens/EventImportScreen';
+export {
+  EventImportScreen,
+  type DraftEdit,
+  type DraftEditTarget,
+} from './screens/EventImportScreen';

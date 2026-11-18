@@ -17,7 +17,7 @@
     },
     "android": {
       "package": "com.chronoflow.frontend",
-      "versionCode": 28,
+      "versionCode": 33,
       "edgeToEdgeEnabled": true,
       "permissions": [
         "ACCESS_COARSE_LOCATION",
@@ -75,6 +75,7 @@
       "./plugins/withOnnxRuntime",
       "./plugins/withSystemLocation",
       "./plugins/withTaskBarNotification",
+      "./plugins/withShareImageImport",
       "./plugins/withReleaseSigning",
       [
         "expo-splash-screen",

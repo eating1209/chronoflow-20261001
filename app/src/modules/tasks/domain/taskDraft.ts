@@ -2,6 +2,7 @@ import type { Priority } from '../../../shared/api';
 import type { Task } from '../../../shared/api';
 import {
   DEFAULT_EVENT_TIME,
+  isDateOnlyPoint,
   isValidDateKey,
   localDateKey,
   parseTime,
@@ -55,6 +56,64 @@ export function emptyTaskDraft(todayKey: string): TaskDraft {
     eventTitle: null,
     rrule: '',
     reminders: [],
+  };
+}
+
+/** 图片 / 语音识别交给待办编辑器的窄输入，字段与服务端 `ParsedEventItem` 对齐。 */
+export interface RecognizedTaskInput {
+  title: string;
+  at?: string | null;
+  timezone?: string | null;
+  locationName?: string | null;
+  description?: string | null;
+}
+
+/**
+ * 把一条识别结果铺成待办草稿。
+ *
+ * <p>没有日期是合法结果：`hasDue=false`，进入「待安排」。只有日期没有时刻时补 09:00，
+ * 并在备注里说明这是默认值，避免用户误以为原文写了 9 点。
+ */
+export function taskDraftFromRecognized(
+  input: RecognizedTaskInput,
+  todayKey: string,
+): TaskDraft {
+  const base = emptyTaskDraft(todayKey);
+  const title = input.title.trim();
+  const locationName = input.locationName?.trim() ?? '';
+  const originalDescription = input.description?.trim() ?? '';
+  let description = originalDescription;
+  let hasDue = false;
+  let dueDate = todayKey;
+  let dueTime = '09:00';
+
+  if (input.at && !Number.isNaN(Date.parse(input.at))) {
+    const zone = input.timezone?.trim() || TASK_TIMEZONE;
+    try {
+      dueDate = localDateKey(input.at, zone);
+      hasDue = true;
+      if (isDateOnlyPoint(input.at, zone)) {
+        description = ['未识别到具体时间，已默认填 09:00，请核对', originalDescription]
+          .filter(Boolean)
+          .join('\n');
+      } else {
+        dueTime = timeInZone(input.at, zone);
+      }
+    } catch {
+      // 时区或时间串异常时退回「待安排」，不把一条坏数据卡在确认页
+    }
+  }
+
+  return {
+    ...base,
+    title,
+    description,
+    place: locationName
+      ? { poiId: null, name: locationName, address: null, latitude: null, longitude: null }
+      : null,
+    hasDue,
+    dueDate,
+    dueTime,
   };
 }
 
@@ -218,9 +277,9 @@ export function buildUpdateTaskPayload(draft: TaskDraft) {
   };
 }
 
-function timeInZone(iso: string): string {
+function timeInZone(iso: string, zone = TASK_TIMEZONE): string {
   return new Intl.DateTimeFormat('en-GB', {
-    timeZone: TASK_TIMEZONE,
+    timeZone: zone,
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,

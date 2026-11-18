@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, type ReactNode } from 'react';
+import { Keyboard, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAppTheme } from '../../../context/AppContext';
@@ -27,6 +27,12 @@ export function WheelLayer({
 }) {
   const theme = useAppTheme();
   const insets = useSafeAreaInsets();
+
+  // 滚轮是底部选择层，键盘还开着会把滚轮顶出屏幕；打开时先收起输入法。
+  useEffect(() => {
+    Keyboard.dismiss();
+  }, []);
+
   return (
     <View
       accessibilityViewIsModal

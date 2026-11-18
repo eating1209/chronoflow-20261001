@@ -1,6 +1,16 @@
 import { useEffect, useState } from 'react';
 import { userFacingError } from '../../../shared/errors';
-import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Keyboard,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import type { EventDetail } from '../../../shared/api';
 import { Card, Screen, showToast } from '../../../shared/ui';
@@ -246,6 +256,7 @@ export function EventEditorScreen({
     setError(null);
   };
   const openTimePicker = (field: 'start' | 'end') => {
+    Keyboard.dismiss();
     setTimeDraft(field === 'start' ? draft.time : draft.endTime);
     setTimePickerField(field);
   };
@@ -265,6 +276,7 @@ export function EventEditorScreen({
     setTimePickerField(null);
   };
   const openDatePicker = () => {
+    Keyboard.dismiss();
     setDateDraft(dateKey);
     setDatePickerOpen(true);
   };
@@ -494,7 +506,10 @@ export function EventEditorScreen({
             {/* 重复与提醒各进一个二级页面：字段多、还要返回栈（spec §4.1.5） */}
             <FormRow
               label="重复"
-              onPress={() => onPickRecurrence(recurrence, dateKey)}
+              onPress={() => {
+                Keyboard.dismiss();
+                onPickRecurrence(recurrence, dateKey);
+              }}
             >
               <FormRowValue
                 text={recurrence.frequency === 'NONE' ? null : recurrenceSummary}
@@ -504,9 +519,10 @@ export function EventEditorScreen({
 
             <FormRow
               label="提醒"
-              onPress={() =>
+              onPress={() => {
+                Keyboard.dismiss();
                 onPickReminder({ minutes: normalizeReminders(draft.reminders), sound: reminderSound })
-              }
+              }}
             >
               <FormRowValue
                 text={
@@ -518,7 +534,13 @@ export function EventEditorScreen({
               />
             </FormRow>
 
-            <FormRow label="地点" onPress={onPickLocation}>
+            <FormRow
+              label="地点"
+              onPress={() => {
+                Keyboard.dismiss();
+                onPickLocation();
+              }}
+            >
               <FormRowValue text={draft.place?.name ?? null} placeholder="添加地点" />
             </FormRow>
             {/* 地图常常只定位到楼，教室/门牌由用户手填（与地点都可空，spec §5.9） */}

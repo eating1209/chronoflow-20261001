@@ -1,8 +1,10 @@
 import { NativeModules, Platform } from 'react-native';
 
-import type { EventDetail, EventOccurrence } from '../../shared/api';
+import type { EventDetail, EventOccurrence, Task } from '../../shared/api';
 import {
   buildSystemCalendarEvent,
+  buildSystemCalendarTask,
+  isSystemCalendarTaskInBackfillRange,
   systemCalendarBackfillRange,
 } from './domain/systemCalendar';
 
@@ -13,6 +15,7 @@ import {
  * iOS 的 EventKit 版本后续单独做，这里不会假装可用。
  */
 const STORAGE_KEY = 'chronoflow.system-calendar';
+const TASK_DEFAULT_DATE_BACKFILL_KEY = 'chronoflow.system-calendar.task-default-end-v3';
 const NATIVE_MODULE = 'ChronoflowCalendar';
 
 interface CalendarNativeModule {
@@ -31,6 +34,7 @@ interface CalendarDiagnostics {
 export interface SystemCalendarApi {
   eventsInRange: (start: string, end: string) => Promise<EventOccurrence[]>;
   eventDetail: (eventId: number) => Promise<EventDetail>;
+  tasks: () => Promise<Task[]>;
 }
 
 export interface SystemCalendarBackfillResult {
@@ -77,6 +81,24 @@ export async function setSystemCalendarEnabled(enabled: boolean): Promise<void> 
   }
 }
 
+async function taskDefaultDateBackfillDone(): Promise<boolean> {
+  try {
+    const SecureStore = await import('expo-secure-store');
+    return (await SecureStore.getItemAsync(TASK_DEFAULT_DATE_BACKFILL_KEY)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+async function markTaskDefaultDateBackfillDone(): Promise<void> {
+  try {
+    const SecureStore = await import('expo-secure-store');
+    await SecureStore.setItemAsync(TASK_DEFAULT_DATE_BACKFILL_KEY, '1');
+  } catch {
+    // 标记没存上只会导致下次启动再补一次；同 id 是更新而不是新增。
+  }
+}
+
 export async function systemCalendarDiagnostics(): Promise<CalendarDiagnostics | null> {
   const module = native();
   if (!module) {
@@ -110,6 +132,10 @@ export async function syncEventToSystemCalendar(detail: EventDetail): Promise<bo
 
 /** 删除一条已经导出过的日程；没导出过也无所谓。 */
 export async function removeSystemCalendarEvent(eventId: number): Promise<boolean> {
+  return removeSystemCalendarEventId(eventId);
+}
+
+async function removeSystemCalendarEventId(eventId: number): Promise<boolean> {
   const module = native();
   if (!module || !(await systemCalendarEnabled())) {
     return false;
@@ -119,6 +145,83 @@ export async function removeSystemCalendarEvent(eventId: number): Promise<boolea
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * 新建 / 修改待办后调用。
+ *
+ * 有截止时间的待办按截止日全天导出；没有截止时间的待办从今天开始、
+ * 持续显示在系统日历里。完成或取消时删除旧条目。
+ */
+export async function syncTaskToSystemCalendar(task: Task): Promise<boolean> {
+  const module = native();
+  if (!module || !(await systemCalendarEnabled())) {
+    return false;
+  }
+  try {
+    const payload = buildSystemCalendarTask(task);
+    if (!payload) {
+      await module.deleteEvent(-task.id);
+      return true;
+    }
+    await module.upsertEvent(JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 删除待办时，把系统日历里对应的条目也撤掉。 */
+export async function removeSystemCalendarTask(taskId: number): Promise<boolean> {
+  return removeSystemCalendarEventId(-taskId);
+}
+
+/**
+ * 旧版本把待办导出成一年长的日程；升级后把现有未完成待办补一遍，
+ * 有截止时间的改成截止日全天，没有截止时间的从今天起持续显示。
+ *
+ * 只在一个账号的这次升级后执行一次；用户没有开启系统日历同步时完全不动。
+ * 失败不打扰用户，下次启动再试；系统日历按负数 task id 更新，不会重复创建。
+ */
+export async function ensureSystemCalendarTaskBackfill(
+  api: SystemCalendarApi,
+): Promise<void> {
+  const module = native();
+  if (!module || !(await systemCalendarEnabled())) {
+    return;
+  }
+  if (await taskDefaultDateBackfillDone()) {
+    return;
+  }
+  const diagnostics = await systemCalendarDiagnostics();
+  if (!diagnostics?.writeGranted || diagnostics.calendarId <= 0) {
+    return;
+  }
+
+  let tasks: Task[];
+  try {
+    tasks = await api.tasks();
+  } catch {
+    return;
+  }
+
+  const now = new Date();
+  let failed = 0;
+  for (const task of tasks.slice(0, 300)) {
+    try {
+      const payload = buildSystemCalendarTask(task, now);
+      if (payload) {
+        await module.upsertEvent(JSON.stringify(payload));
+      } else {
+        await module.deleteEvent(-task.id);
+      }
+    } catch {
+      failed += 1;
+    }
+  }
+  if (failed === 0) {
+    await markTaskDefaultDateBackfillDone();
   }
 }
 
@@ -178,5 +281,33 @@ export async function backfillSystemCalendar(
     }
   };
   await Promise.all(Array.from({ length: Math.min(4, eventIds.length) }, worker));
+
+  // 待办复用同一套映射：负数 id 与日程的正数 id 天然分开。
+  let tasks: Task[] = [];
+  try {
+    tasks = await api.tasks();
+  } catch {
+    // 待办接口失败不影响已经补完的日程；下次开启同步会再试。
+  }
+  const rangeStart = Date.parse(range.start);
+  const rangeEnd = Date.parse(range.end);
+  const backfillNow = new Date();
+  for (const task of tasks.slice(0, 300)) {
+    try {
+      const shouldExport = isSystemCalendarTaskInBackfillRange(task, rangeStart, rangeEnd);
+      const payload = shouldExport ? buildSystemCalendarTask(task, backfillNow) : null;
+      if (payload) {
+        await module.upsertEvent(JSON.stringify(payload));
+        exported += 1;
+      } else {
+        await module.deleteEvent(-task.id);
+      }
+    } catch {
+      failed += 1;
+    }
+  }
+  if (failed === 0) {
+    await markTaskDefaultDateBackfillDone();
+  }
   return { exported, failed };
 }

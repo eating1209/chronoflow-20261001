@@ -7,6 +7,7 @@ import {
   draftDateKey,
   draftToEventDraft,
   draftsFromItems,
+  inferDraftKind,
   normalizeTime,
 } from '../src/modules/vision/domain/vision';
 import { buildCreatePayload } from '../src/modules/calendar/pure';
@@ -27,12 +28,13 @@ describe('识别草稿的归一', () => {
     const drafts = draftsFromItems([
       {
         title: '离返校登记',
+        kind: 'TASK',
         at: '2026-09-24T00:00:00+08:00',
         timezone: 'Asia/Shanghai',
         description: '学工系统完成登记',
       },
       // 没日期是合法结果：照样保留，dateKey 为 null，交给确认页补
-      { title: '填写返校情况统计表', timezone: 'Asia/Shanghai' },
+      { title: '填写返校情况统计表', kind: 'TASK', timezone: 'Asia/Shanghai' },
       // 没标题的条目没法确认也没法建，丢掉
       { title: '   ', at: '2026-09-24T00:00:00+08:00' },
     ]);
@@ -40,7 +42,9 @@ describe('识别草稿的归一', () => {
     expect(drafts).toHaveLength(2);
     expect(drafts[0].title).toBe('离返校登记');
     expect(drafts[0].at).toBe('2026-09-24T00:00:00+08:00');
+    expect(drafts[0].kind).toBe('TASK');
     expect(drafts[1].at ?? null).toBeNull();
+    expect(drafts[1].kind).toBe('TASK');
   });
 
   it('日期落在哪一天：用草稿自己的时区解释，没日期给 null', () => {
@@ -52,6 +56,30 @@ describe('识别草稿的归一', () => {
     expect(draftDateKey({ title: 'a', at: '下周三' })).toBeNull();
   });
 
+});
+
+describe('自动判断日程 / 待办', () => {
+  it('服务端给了分类就原样采用，即使它和「有没有日期」不一致', () => {
+    expect(inferDraftKind({ title: '开会', kind: 'TASK', at: '2026-09-24T15:00:00+08:00' }))
+      .toBe('TASK');
+    expect(inferDraftKind({ title: '交材料', kind: 'EVENT' })).toBe('EVENT');
+  });
+
+  it('旧服务端没给 kind：动作词进待办，到场参加的事进日程', () => {
+    expect(inferDraftKind({
+      title: '9 月 24 日前交材料',
+      at: '2026-09-24T00:00:00+08:00',
+    })).toBe('TASK');
+    expect(inferDraftKind({
+      title: '项目评审会',
+      at: '2026-09-25T15:00:00+08:00',
+    })).toBe('EVENT');
+  });
+
+  it('看不出动词时：有日期按日程，没日期按待办', () => {
+    expect(inferDraftKind({ title: '中秋安排', at: '2026-09-25T00:00:00+08:00' })).toBe('EVENT');
+    expect(inferDraftKind({ title: '整理资料' })).toBe('TASK');
+  });
 });
 
 describe('草稿 → 创建日程请求', () => {
@@ -144,5 +172,18 @@ describe('抽取提示词不变量（服务端那份，Java/Python 逐字节相�
     expect(prompt).toContain('要你做的事');
     expect(prompt).toContain('没写就留空');
     expect(prompt).toContain('不要猜时刻');
+  });
+
+  it('要求模型自动分日程 / 待办，并给出 JSON 字段', () => {
+    expect(prompt).toContain('判断日程还是待办');
+    expect(prompt).toContain('`EVENT`');
+    expect(prompt).toContain('`TASK`');
+    expect(prompt).toContain('"kind":"EVENT"');
+  });
+
+  it('相对日期要换算；没有具体哪一天时不猜日期', () => {
+    expect(prompt).toContain('明天、后天、大后天、本周三、下周三');
+    expect(prompt).toContain('下个月');
+    expect(prompt).toContain('不要猜成 1 号或月底');
   });
 });

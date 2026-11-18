@@ -19,8 +19,14 @@ import { userFacingError } from '../../../shared/errors';
 import { useAppScheme, useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
 import { useFeatureFlags } from '../featureFlags';
 import {
+  DEFAULT_TEST_UPDATE_URL,
+  TestUpdateModal,
+  clearTestUpdateUrl,
   describeReminderSound,
+  installTestUpdate,
+  readTestUpdateUrl,
   refreshLocalReminders,
+  saveTestUpdateUrl,
   useAppUpdate,
   type ReminderSound,
 } from '../../notifications';
@@ -28,6 +34,7 @@ import { LEGAL_DOCS, OPERATOR_NAME, type LegalDoc } from '../../compliance/pure'
 import { maskPhone } from '../../identity';
 import type { TrainingDataPreference } from '../../../api/endpoints';
 import { askPermission } from '../../../shared/permission';
+import { PermissionHelpModal } from './PermissionHelpModal';
 import {
   backfillSystemCalendar,
   clearSystemCalendarEvents,
@@ -38,10 +45,12 @@ import {
 import {
   clearTaskBarNotification,
   requestTaskBarOverlayPermission,
+  requestTaskBarUsageAccess,
   setTaskBarOverlayEnabled,
   syncTaskBarNotification,
   taskBarOverlayEnabled,
   taskBarOverlayPermissionGranted,
+  taskBarUsageAccessGranted,
 } from '../../tasks';
 
 /** 「我的」页的五个分类。**每一个都是独立路由**（`SettingsSection`），不是在同一页里换内容。 */
@@ -54,6 +63,10 @@ export const SETTINGS_SECTION_TITLES: Record<SettingsSectionKey, string> = {
   legal: '隐私与合规',
   about: '关于',
 };
+
+/** 测试更新入口只在测试包构建里存在；正式上架包不带这个隐藏入口。 */
+const TEST_UPDATER_ENABLED =
+  Platform.OS === 'android' && process.env.EXPO_PUBLIC_ENABLE_TEST_UPDATER === '1';
 
 /**
  * 「我的」页里某一类的**独立子页**。
@@ -116,8 +129,17 @@ export function SettingsSectionScreen({
   const [overlayEnabled, setOverlayEnabled] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const overlayRequestPending = useRef(false);
+  const [usageAccess, setUsageAccess] = useState(false);
   const [calendarSyncOn, setCalendarSyncOn] = useState(false);
   const [calendarSyncBusy, setCalendarSyncBusy] = useState(false);
+  const [testUpdateOpen, setTestUpdateOpen] = useState(false);
+  const [savedTestUpdateUrl, setSavedTestUpdateUrl] = useState<string | null>(null);
+  const [testUpdateBusy, setTestUpdateBusy] = useState(false);
+  const [testUpdateProgress, setTestUpdateProgress] = useState(0);
+  const [testUpdateError, setTestUpdateError] = useState<string | null>(null);
+  const testUpdateLongPressed = useRef(false);
+  const testUpdateAbort = useRef<AbortController | null>(null);
+  const [permissionHelpOpen, setPermissionHelpOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -125,6 +147,11 @@ export function SettingsSectionScreen({
       void taskBarOverlayEnabled().then((enabled) => {
         if (alive) {
           setOverlayEnabled(enabled);
+        }
+      });
+      void taskBarUsageAccessGranted().then((granted) => {
+        if (alive) {
+          setUsageAccess(granted);
         }
       });
       void systemCalendarEnabled().then((enabled) => {
@@ -138,9 +165,27 @@ export function SettingsSectionScreen({
     };
   }, [section, taskBarEnabled]);
 
+  /** 隐藏入口只读取本地保存的测试地址；没配置过时弹窗里用默认地址。 */
+  useEffect(() => {
+    let alive = true;
+    if (TEST_UPDATER_ENABLED && section === 'support') {
+      void readTestUpdateUrl().then((url) => {
+        if (alive) {
+          setSavedTestUpdateUrl(url);
+        }
+      });
+    }
+    return () => {
+      alive = false;
+    };
+  }, [section]);
+
   /** 从系统“显示在其他应用上层”页返回时，自动把刚才的开启动作做完。 */
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && section === 'preferences') {
+        void taskBarUsageAccessGranted().then(setUsageAccess);
+      }
       if (
         state !== 'active' ||
         section !== 'preferences' ||
@@ -201,6 +246,51 @@ export function SettingsSectionScreen({
     }, [api, section]),
   );
 
+  const openTestUpdate = useCallback(() => {
+    setTestUpdateError(null);
+    setTestUpdateProgress(0);
+    setTestUpdateOpen(true);
+  }, []);
+
+  const submitTestUpdate = useCallback(async (url: string) => {
+    const controller = new AbortController();
+    testUpdateAbort.current = controller;
+    setTestUpdateBusy(true);
+    setTestUpdateError(null);
+    setTestUpdateProgress(0);
+    try {
+      await saveTestUpdateUrl(url);
+      setSavedTestUpdateUrl(url.trim());
+      await installTestUpdate(url, setTestUpdateProgress, controller.signal);
+      setTestUpdateOpen(false);
+    } catch (cause) {
+      if (controller.signal.aborted) {
+        setTestUpdateOpen(false);
+        return;
+      }
+      // 测试入口把真实原因露出来（地址写错、404、下载被截断），方便当场排查
+      setTestUpdateError(
+        cause instanceof Error && cause.message
+          ? cause.message
+          : '下载或安装失败，请检查地址后重试',
+      );
+    } finally {
+      testUpdateAbort.current = null;
+      setTestUpdateBusy(false);
+    }
+  }, []);
+
+  const cancelTestUpdate = useCallback(() => {
+    testUpdateAbort.current?.abort();
+  }, []);
+
+  const clearTestUpdate = useCallback(async () => {
+    await clearTestUpdateUrl();
+    setSavedTestUpdateUrl(null);
+    setTestUpdateError(null);
+    setTestUpdateOpen(false);
+  }, []);
+
   return (
 <Screen>
       <EditorHeader title={SETTINGS_SECTION_TITLES[section]} cancelLabel="返回" onCancel={onBack} />
@@ -224,6 +314,20 @@ export function SettingsSectionScreen({
                     : '未认证（可选，认证后可用于找回账号）'
                 }
                 onPress={onOpenRealName}
+                trailing={<Chevron />}
+              />
+              <ListSeparator inset={52} />
+              <ListRow
+                leading={<RowIcon name="eye-outline" />}
+                title="桌面自动展开"
+                subtitle={
+                  usageAccess
+                    ? '其他应用内缩成细条，回到桌面直接恢复原胶囊'
+                    : '未授权时无法稳定区分其他应用，任务条可能保持原胶囊'
+                }
+                onPress={() => {
+                  void requestTaskBarUsageAccess();
+                }}
                 trailing={<Chevron />}
               />
               <ListSeparator inset={52} />
@@ -354,7 +458,7 @@ export function SettingsSectionScreen({
                       if (!taskBarEnabled) {
                         Alert.alert(
                           '先开启任务栏与锁屏显示',
-                          '顶部小条和通知卡共用同一份任务数据，请先打开上方开关。',
+                          '请先打开上方的“任务栏与锁屏显示”。',
                         );
                         return;
                       }
@@ -366,7 +470,7 @@ export function SettingsSectionScreen({
                             overlayRequestPending.current = true;
                             Alert.alert(
                               '需要悬浮窗权限',
-                              '顶部小条会显示在状态栏下方，不会挡住 App 内的主要操作。请允许“显示在其他应用上层”后再回来。',
+                              '顶部小条显示在状态栏下方。允许“显示在其他应用上层”后返回即可。',
                               [
                                 {
                                   text: '暂不开启',
@@ -374,6 +478,10 @@ export function SettingsSectionScreen({
                                   onPress: () => {
                                     overlayRequestPending.current = false;
                                   },
+                                },
+                                {
+                                  text: '查看步骤',
+                                  onPress: () => setPermissionHelpOpen(true),
                                 },
                                 {
                                   text: '去授权',
@@ -391,6 +499,29 @@ export function SettingsSectionScreen({
                             Alert.alert(
                               '没有开启',
                               '系统没有允许顶部小条运行，请检查“显示在其他应用上层”权限。',
+                            );
+                            return;
+                          }
+                          const usage = await taskBarUsageAccessGranted();
+                          setUsageAccess(usage);
+                          if (!usage) {
+                            Alert.alert(
+                              '桌面自动展开',
+                              '需要“使用情况访问”来判断你在桌面还是其他 App。只读取前台应用名，不读取内容；授权后其他 App 内显示细条，回桌面恢复胶囊。',
+                              [
+                                { text: '稍后', style: 'cancel' },
+                                {
+                                  text: '查看步骤',
+                                  onPress: () => setPermissionHelpOpen(true),
+                                },
+                                {
+                                  text: '去授权',
+                                  onPress: () => {
+                                    overlayRequestPending.current = true;
+                                    void requestTaskBarUsageAccess();
+                                  },
+                                },
+                              ],
                             );
                           }
                         } finally {
@@ -414,10 +545,10 @@ export function SettingsSectionScreen({
                 title="同步到系统日历"
                 subtitle={
                   calendarSyncBusy
-                    ? '正在把日程写入手机自带日历…'
+                    ? '正在把日程和待办写入手机自带日历…'
                     : calendarSyncOn
-                      ? '已开启：新建和修改的日程会单向写入手机日历'
-                      : '单向导出到手机自带日历，不读取、不修改你原来的日程'
+                      ? '已开启：日程和未完成待办会单向写入；待办按截止日全天显示'
+                      : '单向导出日程和待办；没有截止时间的待办从今天起持续显示'
                 }
                 trailing={
                   <Switch
@@ -449,7 +580,7 @@ export function SettingsSectionScreen({
                           await setSystemCalendarEnabled(true);
                           setCalendarSyncOn(true);
                           const result = await backfillSystemCalendar(api);
-                          showToast(`已同步 ${result.exported} 条日程到系统日历`);
+                          showToast(`已同步 ${result.exported} 条日程和待办到系统日历`);
                           if (result.failed > 0) {
                             Alert.alert(
                               '部分日程没有同步',
@@ -555,6 +686,18 @@ export function SettingsSectionScreen({
               <ListSeparator inset={52} />
             </>
           ) : null}
+          {Platform.OS === 'android' ? (
+            <>
+              <ListRow
+                leading={<RowIcon name="help-circle-outline" />}
+                title="任务条开启帮助"
+                subtitle="悬浮窗、使用情况、后台运行（vivo / 小米 / 华为 / OPPO）"
+                onPress={() => setPermissionHelpOpen(true)}
+                trailing={<Chevron />}
+              />
+              <ListSeparator inset={52} />
+            </>
+          ) : null}
           {/*
             手动检查更新（spec §4.1.11）：启动时已静默查过一次，这里是「我就是要现在查」——
             它**一定会给反馈**：有新版本弹更新说明，没有就明确说「已是最新版本」。
@@ -562,8 +705,26 @@ export function SettingsSectionScreen({
           <ListRow
             leading={<RowIcon name="cloud-download-outline" />}
             title="检查更新"
-            subtitle={`当前版本 ${currentVersionName}`}
-            onPress={() => void checkUpdate(true)}
+            subtitle={`当前版本 ${currentVersionName}${savedTestUpdateUrl ? ' · 测试更新已启用' : ''}`}
+            onPress={() => {
+              if (testUpdateLongPressed.current) {
+                testUpdateLongPressed.current = false;
+                return;
+              }
+              void checkUpdate(true);
+            }}
+            onLongPress={
+              TEST_UPDATER_ENABLED
+                ? () => {
+                    // 长按会先于松手的 onPress 触发；用一个短标记吞掉紧跟其后的普通点击
+                    testUpdateLongPressed.current = true;
+                    setTimeout(() => {
+                      testUpdateLongPressed.current = false;
+                    }, 1200);
+                    openTestUpdate();
+                  }
+                : undefined
+            }
             trailing={<Chevron />}
           />
         </ListGroup>
@@ -659,6 +820,36 @@ export function SettingsSectionScreen({
         </ListGroup>
       ) : null}
       </ScrollView>
+      {TEST_UPDATER_ENABLED ? (
+        <TestUpdateModal
+          visible={testUpdateOpen}
+          initialUrl={savedTestUpdateUrl ?? ''}
+          defaultUrl={DEFAULT_TEST_UPDATE_URL}
+          busy={testUpdateBusy}
+          progress={testUpdateProgress}
+          error={testUpdateError}
+          onClose={() => {
+            if (!testUpdateBusy) {
+              setTestUpdateOpen(false);
+            }
+          }}
+          onSubmit={(url) => void submitTestUpdate(url)}
+          onClear={() => void clearTestUpdate()}
+          onCancelDownload={cancelTestUpdate}
+        />
+      ) : null}
+      <PermissionHelpModal
+        visible={permissionHelpOpen}
+        onClose={() => setPermissionHelpOpen(false)}
+        onOpenOverlaySettings={() => {
+          setPermissionHelpOpen(false);
+          void requestTaskBarOverlayPermission();
+        }}
+        onOpenUsageSettings={() => {
+          setPermissionHelpOpen(false);
+          void requestTaskBarUsageAccess();
+        }}
+      />
     </Screen>
   );
 }

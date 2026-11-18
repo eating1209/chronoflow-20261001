@@ -18,6 +18,8 @@ export {
   useAppUpdate,
 } from './screens/AppUpdater';
 
+export { TestUpdateModal } from './screens/TestUpdateModal';
+
 export {
   decideUpdate,
   forceReasonText,
@@ -27,6 +29,18 @@ export {
   updateTitle,
   type UpdateDecision,
 } from './domain/appUpdate';
+
+export {
+  DEFAULT_TEST_UPDATE_URL,
+  normalizeTestUpdateUrl,
+} from './domain/testUpdate';
+
+export {
+  clearTestUpdateUrl,
+  installTestUpdate,
+  readTestUpdateUrl,
+  saveTestUpdateUrl,
+} from './testUpdate';
 
 export {
   persistReminderSettings,

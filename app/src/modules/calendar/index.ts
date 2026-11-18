@@ -27,9 +27,12 @@ export type {
 export {
   backfillSystemCalendar,
   clearSystemCalendarEvents,
+  ensureSystemCalendarTaskBackfill,
   removeSystemCalendarEvent,
+  removeSystemCalendarTask,
   setSystemCalendarEnabled,
   syncEventToSystemCalendar,
+  syncTaskToSystemCalendar,
   systemCalendarAvailable,
   systemCalendarDiagnostics,
   systemCalendarEnabled,

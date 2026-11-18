@@ -1,11 +1,12 @@
-"""OCR 文字 → 日程草稿（spec §4.1.9）。行为与 Java 版 `AgentTextParseService` 对齐。
+"""OCR 文字 → 日程 / 待办草稿（spec §4.1.9）。行为与 Java 版 `AgentTextParseService` 对齐。
 
 图片识别日程分两段：手机端的端侧 OCR（PaddleOCR PP-OCRv4）**又准又不花钱、图片还不出手机**，
 「一段通知里有几件要做的事、哪句是时间」这种理解活交给服务端模型（百炼）。
 
 提示词正文在 `app/resources/agent/vision-prompt.md`，与 Java 版 `chronoflow-agent` 里那一份
 **逐字节相同**（`tests/test_vision.py` 钉住了这一点）。抽取口径全部写在提示词里：
-只抽「要你去做的事」、日期有就写没有就留空、不猜时刻。这里只负责调用与容错解析。
+只抽「要你去做的事」、自动分到日程或待办、日期有就写没有就留空、不猜时刻。
+这里只负责调用与容错解析。
 """
 
 from __future__ import annotations
@@ -26,12 +27,13 @@ MAX_TEXT_LENGTH = 4000
 
 @dataclass(frozen=True)
 class ParsedEventDraft:
-    """抽取出来的一条日程草稿；`at` 为 None 表示**文字里没写日期**（合法结果，由用户补）。
+    """抽取出来的一条安排草稿；`at` 为 None 表示**文字里没写日期**（合法结果，由用户补）。
 
-    比整图识别那一路的 `RecognizedEvent` 更窄：**只产出日程**，没有 kind、没有 confidence。
+    `kind` 是 EVENT（日程）或 TASK（待办）。不能靠「有没有时间」判断：待办也可能有截止时间。
     """
 
     title: str
+    kind: str
     at: str | None
     timezone: str
     location_name: str | None
@@ -40,6 +42,7 @@ class ParsedEventDraft:
     def to_dict(self) -> dict:
         return {
             "title": self.title,
+            "kind": self.kind,
             "at": self.at,
             "timezone": self.timezone,
             "locationName": self.location_name,
@@ -98,10 +101,12 @@ def parse_items(reply: str | None, timezone: str) -> list[ParsedEventDraft]:
         if not title:
             # 没标题的条目没法确认也没法建，丢掉——宁可少一条，也别给用户一条空白卡
             continue
+        at = _format_at(node.get("at"), zone)
         drafts.append(
             ParsedEventDraft(
                 title=title,
-                at=_format_at(node.get("at"), zone),
+                kind=_parse_kind(node.get("kind"), title, at),
+                at=at,
                 # 时区以服务端为准：at 已按请求时区解析，回带别的时区只会让两者对不上
                 timezone=zone.key,
                 location_name=_blank_to_none(node.get("locationName")),
@@ -109,6 +114,31 @@ def parse_items(reply: str | None, timezone: str) -> list[ParsedEventDraft]:
             )
         )
     return drafts
+
+
+_TASK_HINTS = (
+    "登记", "报名", "提交", "上交", "交材料", "缴费", "付款", "填写", "填表",
+    "领取", "回复", "确认", "申请", "办理", "预约", "上传", "下载", "打卡",
+    "完成", "截止", "统计表", "问卷",
+)
+_EVENT_HINTS = (
+    "开会", "会议", "上课", "讲座", "考试", "面试", "大会", "活动", "聚餐",
+    "见面", "出发", "乘车", "航班", "高铁", "火车", "电影", "演出", "比赛",
+)
+
+
+def _parse_kind(value, title: str, at: str | None) -> str:
+    """模型给了就用；没给 / 写错时按事项动词兜底，保证 App 永远拿到 EVENT 或 TASK。"""
+    normalized = str(value or "").strip().upper()
+    if normalized in {"EVENT", "TASK"}:
+        return normalized
+    text = title.casefold()
+    if any(hint in text for hint in _TASK_HINTS):
+        return "TASK"
+    if any(hint in text for hint in _EVENT_HINTS):
+        return "EVENT"
+    # 没日期更像「待安排」；有明确时间且看不出动作性质时按日程。
+    return "EVENT" if at else "TASK"
 
 
 def _format_at(value, zone: ZoneInfo) -> str | None:

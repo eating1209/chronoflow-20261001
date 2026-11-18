@@ -208,6 +208,7 @@ class CalendarSyncModule(
     private fun buildValues(payload: JSONObject, calendarId: Long): ContentValues {
         val start = payload.getLong("startMillis")
         val end = payload.getLong("endMillis")
+        val allDay = payload.optBoolean("allDay", false)
         val rrule = payload.optString("rrule", "").takeIf { it.isNotBlank() }
         val durationSeconds = ((end - start) / 1000L).coerceAtLeast(60L)
         val location = listOf(
@@ -228,17 +229,23 @@ class CalendarSyncModule(
             } else {
                 putNull(CalendarContract.Events.EVENT_LOCATION)
             }
-            val timezone = payload.optString("timezone", "Asia/Shanghai")
+            // 全天事件必须按 UTC 零点落库；否则华为 / OPPO 日历可能整体偏一天。
+            val timezone = if (allDay) "UTC" else payload.optString("timezone", "Asia/Shanghai")
             put(CalendarContract.Events.DTSTART, start)
             put(CalendarContract.Events.EVENT_TIMEZONE, timezone)
             put(CalendarContract.Events.EVENT_END_TIMEZONE, timezone)
-            put(CalendarContract.Events.ALL_DAY, 0)
+            put(CalendarContract.Events.ALL_DAY, if (allDay) 1 else 0)
             put(CalendarContract.Events.HAS_ALARM, 0)
             put(CalendarContract.Events.STATUS, CalendarContract.Events.STATUS_CONFIRMED)
             if (rrule != null) {
                 // 重复日程用 DURATION 表示每次多久，系统日历不接受 DTEND + RRULE 的组合。
                 put(CalendarContract.Events.RRULE, rrule)
-                put(CalendarContract.Events.DURATION, "P${durationSeconds}S")
+                if (allDay) {
+                    val durationDays = ((end - start) / 86_400_000L).coerceAtLeast(1L)
+                    put(CalendarContract.Events.DURATION, "P${durationDays}D")
+                } else {
+                    put(CalendarContract.Events.DURATION, "P${durationSeconds}S")
+                }
                 putNull(CalendarContract.Events.DTEND)
             } else {
                 // 从「重复」改回「不重复」时，必须把旧的 RRULE / DURATION 清掉，

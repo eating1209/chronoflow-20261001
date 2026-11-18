@@ -1,8 +1,11 @@
 package com.chronoflow.frontend
 
+import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Process
 import android.provider.Settings
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -81,6 +84,36 @@ class TaskBarNotificationModule(
     @ReactMethod
     fun canDrawOverlays(promise: Promise) {
         promise.resolve(Settings.canDrawOverlays(reactApplicationContext))
+    }
+
+    @ReactMethod
+    fun hasUsageAccess(promise: Promise) {
+        promise.resolve(hasUsageAccess(reactApplicationContext))
+    }
+
+    /** 打开“使用情况访问”授权页；返回 App 后由 JS 重新检查。 */
+    @ReactMethod
+    fun requestUsageAccess(promise: Promise) {
+        try {
+            val context = reactApplicationContext
+            val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
+                data = Uri.parse("package:${context.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val activity = context.currentActivity
+            if (activity != null) {
+                activity.startActivity(intent)
+            } else {
+                context.startActivity(intent)
+            }
+            promise.resolve(true)
+        } catch (error: Exception) {
+            promise.reject(
+                "E_TASKBAR_USAGE_ACCESS",
+                error.message ?: "无法打开使用情况访问页",
+                error,
+            )
+        }
     }
 
     @ReactMethod
@@ -186,6 +219,7 @@ class TaskBarNotificationModule(
                 put("lastError", TaskBarNotificationCore.lastError(reactApplicationContext) ?: "")
                 put("permission", TaskBarNotificationCore.isPermissionGranted(reactApplicationContext))
                 put("overlayPermission", Settings.canDrawOverlays(reactApplicationContext))
+            put("usageAccess", hasUsageAccess(reactApplicationContext))
                 put("overlayWanted", TaskBarNotificationCore.isOverlayWanted(reactApplicationContext))
                 put("overlayRunning", TaskBarOverlayService.isRunning())
                 put("overlayAttached", TaskBarOverlayService.isAttached())
@@ -193,7 +227,6 @@ class TaskBarNotificationModule(
                 put("overlayLastRecoveryAt", TaskBarOverlayService.lastRecoveryAt())
                 put("overlayPresentation", TaskBarOverlayService.presentationName())
                 put("launcherForeground", TaskBarOverlayService.isLauncherForeground())
-                put("overlayManualFull", TaskBarOverlayService.isManualFullActive())
                 put("overlayRetryAttempts", TaskBarOverlayService.windowRetryAttempts())
                 put("overlayLastWindowError", TaskBarOverlayService.lastWindowError())
                 put("oemFamily", TaskBarOverlayService.oemFamily())
@@ -214,6 +247,25 @@ class TaskBarNotificationModule(
 
     @ReactMethod
     fun removeListeners(@Suppress("UNUSED_PARAMETER") count: Int) = Unit
+
+    private fun hasUsageAccess(context: Context): Boolean {
+        val appOps = context.getSystemService(AppOpsManager::class.java) ?: return false
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            appOps.unsafeCheckOpNoThrow(
+                AppOpsManager.OPSTR_GET_USAGE_STATS,
+                Process.myUid(),
+                context.packageName,
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            appOps.checkOpNoThrow(
+                AppOpsManager.OPSTR_GET_USAGE_STATS,
+                Process.myUid(),
+                context.packageName,
+            )
+        }
+        return mode == AppOpsManager.MODE_ALLOWED
+    }
 
     private fun emitCompletion(action: TaskBarNotificationCore.CompletedAction) {
         val payload: WritableMap = Arguments.createMap().apply {

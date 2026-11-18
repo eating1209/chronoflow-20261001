@@ -189,14 +189,14 @@ def test_agent_prompt_is_the_same_file_as_java() -> None:
 
 
 def test_parse_text_endpoint_extracts_todos_with_optional_date(client, model) -> None:
-    """OCR 文字 → 日程草稿：缺日期的条目照样返回、带 timezone、没有 kind（spec §4.1.9）。"""
+    """OCR 文字 → 安排草稿：自动分日程 / 待办，缺日期的条目照样返回（spec §4.1.9）。"""
     tokens = register(client, "13900007010")
     model.last_json = """
     好的，识别结果如下：
     ```json
     {"items":[
-      {"title":"离返校登记","at":"2026-09-24T00:00:00+08:00","timezone":"Asia/Shanghai"},
-      {"title":"填写返校情况统计表","timezone":"Asia/Shanghai","description":"金山文档填写"}
+      {"title":"离返校登记","kind":"TASK","at":"2026-09-24T00:00:00+08:00","timezone":"Asia/Shanghai"},
+      {"title":"填写返校情况统计表","kind":"TASK","timezone":"Asia/Shanghai","description":"金山文档填写"}
     ]}
     ```
     """
@@ -215,7 +215,8 @@ def test_parse_text_endpoint_extracts_todos_with_optional_date(client, model) ->
     assert [item["title"] for item in items] == ["离返校登记", "填写返校情况统计表"]
     assert items[0]["at"].startswith("2026-09-24T00:00")
     assert items[0]["timezone"] == "Asia/Shanghai"
-    assert "kind" not in items[0]
+    assert items[0]["kind"] == "TASK"
+    assert items[1]["kind"] == "TASK"
     # 没写日期的那条：at 为 null，但条目本身必须在
     assert items[1]["at"] is None
     # 提示词里带上了今天与时区，模型才有依据换算相对时间

@@ -16,7 +16,7 @@ import java.time.ZoneId;
 import java.util.List;
 
 /**
- * 「图片识别日程」的第二段：手机端 OCR 出文字，这里交给云端模型理解（spec §4.1.9）。
+ * 「图片识别安排」的第二段：手机端 OCR 出文字，这里交给云端模型理解并分日程 / 待办（spec §4.1.9）。
  *
  * <p>`POST /api/v1/ai/events/parse-text`。与 {@code /ai/events/recognize}（整图上传给模型）
  * 的区别：**图片不出手机**，这里只收文字；OCR 用手机本地能力（中文准且免费），
@@ -60,8 +60,8 @@ public class AgentTextParseController {
     }
 
     /**
-     * 解析出来的日程草稿：`items[].at` **可以缺失**（通知里根本没写日期），
-     * 由 App 的确认页让用户补；`items[].timezone` 是解释 `at` 用的时区。
+     * 解析出来的安排草稿：`items[].kind` 是 EVENT / TASK；`items[].at` **可以缺失**
+     * （通知里根本没写日期），由 App 的确认页让用户补；`items[].timezone` 是解释 `at` 用的时区。
      */
     public record ParseTextResponse(List<ParsedEventDraft> items) {
     }

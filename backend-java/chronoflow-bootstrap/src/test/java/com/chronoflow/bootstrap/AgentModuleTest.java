@@ -872,7 +872,7 @@ class AgentModuleTest {
     }
 
     @Test
-    @DisplayName("OCR 文字 → 日程草稿：只抽要做的事、缺日期照样返回、带 timezone 无 kind（spec §4.1.9）")
+    @DisplayName("OCR 文字 → 安排草稿：自动分日程 / 待办、缺日期照样返回（spec §4.1.9）")
     void parsesOcrTextIntoDrafts() throws Exception {
         JsonNode account = registerAccount("13800000635", "识别用户");
         String token = account.path("data").path("accessToken").asText();
@@ -883,9 +883,9 @@ class AgentModuleTest {
                 好的，识别结果如下：
                 ```json
                 {"items":[
-                  {"title":"离返校登记","at":"2026-09-24T00:00:00+08:00",
+                  {"title":"离返校登记","kind":"TASK","at":"2026-09-24T00:00:00+08:00",
                    "timezone":"Asia/Shanghai","description":"9 月 24 日前在学工系统完成离返校登记"},
-                  {"title":"填写返校情况统计表","timezone":"Asia/Shanghai","description":"金山文档填写"}
+                  {"title":"填写返校情况统计表","kind":"TASK","timezone":"Asia/Shanghai","description":"金山文档填写"}
                 ]}
                 ```
                 """, List.of());
@@ -897,8 +897,8 @@ class AgentModuleTest {
 
         JsonNode items = parsed.path("data").path("items");
         assertThat(items).as("一份通知要抽出多条: %s", parsed).hasSize(2);
-        // 只产出日程：没有 kind / confidence 这些我们不再需要的字段
-        assertThat(items.get(0).path("kind").isMissingNode()).as("不再有 kind").isTrue();
+        assertThat(items.get(0).path("kind").asText()).isEqualTo("TASK");
+        assertThat(items.get(1).path("kind").asText()).isEqualTo("TASK");
         assertThat(items.get(0).path("confidence").isMissingNode()).isTrue();
         assertThat(items.get(0).path("title").asText()).isEqualTo("离返校登记");
         // at 直接给原时区字符串（不再是 Jackson 归一后的 UTC），客户端一眼能看懂
@@ -916,6 +916,7 @@ class AgentModuleTest {
         assertThat(prompt).contains("2026-09-30").contains("Asia/Shanghai")
                 .contains("要你做的事").contains("没写就留空")
                 .contains("不要拿今天兜底").contains("不要猜时刻")
+                .contains("判断日程还是待办").contains("`EVENT`").contains("`TASK`")
                 .doesNotContain("{{");
         // 结构化输出 + 温度 0：抽取要的是稳定，不是想象力
         assertThat(request.jsonMode()).isTrue();

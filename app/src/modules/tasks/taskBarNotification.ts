@@ -3,6 +3,7 @@ import { DeviceEventEmitter, NativeModules, Platform, TurboModuleRegistry } from
 import type { Endpoints } from '../../api/endpoints';
 import type { EventOccurrence, Task } from '../../shared/api';
 import { APP_TIMEZONE, dateKeyToIso, localDateKey } from '../calendar/pure';
+import { removeSystemCalendarTask } from '../calendar/systemCalendar';
 import { buildTaskBarPayload } from './domain/taskBar';
 import { eventOverviewEntry, taskOverviewEntry } from './domain/taskOverview';
 
@@ -23,6 +24,8 @@ type NativeTaskBarModule = {
   pendingCompletions(): Promise<string>;
   ackCompletions(keysJson: string): Promise<boolean>;
   canDrawOverlays?(): Promise<boolean>;
+  hasUsageAccess?(): Promise<boolean>;
+  requestUsageAccess?(): Promise<boolean>;
   isOverlayEnabled?(): Promise<boolean>;
   requestOverlayPermission?(): Promise<boolean>;
   startOverlay?(): Promise<boolean>;
@@ -190,6 +193,7 @@ export function flushPendingTaskBarCompletions(api: Endpoints): Promise<number> 
       try {
         if (action.kind === 'task') {
           await api.completeTask(action.id, true);
+          await removeSystemCalendarTask(action.id);
         } else {
           await api.completeEvent(action.id, true, action.occurrenceDate);
         }
@@ -399,6 +403,32 @@ export async function requestTaskBarOverlayPermission(): Promise<boolean> {
   }
   try {
     return await nativeModule.requestOverlayPermission();
+  } catch {
+    return false;
+  }
+}
+
+/** 是否允许“使用情况访问”：Android 14+ 靠它判断桌面，否则只能退回细条。 */
+export async function taskBarUsageAccessGranted(): Promise<boolean> {
+  const nativeModule = nativeTaskBarModule();
+  if (!nativeModule || typeof nativeModule.hasUsageAccess !== 'function') {
+    return false;
+  }
+  try {
+    return await nativeModule.hasUsageAccess();
+  } catch {
+    return false;
+  }
+}
+
+/** 打开“使用情况访问”系统授权页；返回 App 后由页面重新检查。 */
+export async function requestTaskBarUsageAccess(): Promise<boolean> {
+  const nativeModule = nativeTaskBarModule();
+  if (!nativeModule || typeof nativeModule.requestUsageAccess !== 'function') {
+    return false;
+  }
+  try {
+    return await nativeModule.requestUsageAccess();
   } catch {
     return false;
   }

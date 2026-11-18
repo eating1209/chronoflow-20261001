@@ -294,14 +294,17 @@ export interface FeedbackItem {
 }
 
 /**
- * 「OCR 文字 → 日程草稿」的一条（`POST /ai/events/parse-text`，spec §4.1.9）。
+ * 「OCR 文字 → 安排草稿」的一条（`POST /ai/events/parse-text`，spec §4.1.9）。
  *
- * <p>只产出日程（没有 kind / confidence）。`at` 为空表示**通知里没写日期**——
- * 这是合法结果，由确认页让用户补；服务端把空字段省掉，所以这里是 undefined 而不是 null。
+ * <p>`kind` 是服务端判断的日程 / 待办；字段可缺省是为了兼容还没升级的旧服务端，
+ * 客户端会用 `inferDraftKind()` 按文案兜底。`at` 为空表示**通知里没写日期**——
+ * 这是合法结果；日程由确认页让用户补，待办则进入「待安排」。
+ * 服务端把空字段省掉，所以这里是 undefined 而不是 null。
  * `timezone` 是解释 `at` 用的时区，客户端靠它把时间落到正确的那一天。
  */
 export interface ParsedEventItem {
   title: string;
+  kind?: 'EVENT' | 'TASK' | null;
   at?: string | null;
   timezone?: string | null;
   locationName?: string | null;

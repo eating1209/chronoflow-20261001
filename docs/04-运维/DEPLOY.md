@@ -335,3 +335,18 @@ cd ~/develop/xa-todo && bash scripts/build_apk.sh --release --archs=arm64-v8a,x8
 bash scripts/publish_apk.sh app/android/app/build/outputs/apk/release/app-release.apk <版本名> <versionCode> "<更新说明>"
 # → 把打印的九行写进 /opt/chronoflow/.env → docker compose up -d backend → curl 验 app-release
 ```
+
+### 测试包：不发布到 `app-release` 的隐藏更新
+
+测试包只上传到固定文件名，**不写 `.env`**，所以线上用户不会看到：
+
+```bash
+CHRONOFLOW_APK_NAME=chronoflow-test.apk \
+bash scripts/publish_apk.sh "$HOME/chronoflow-1.1.8-phone.apk" "1.1.8 测试版" <versionCode> "测试说明"
+```
+
+App 里进入「我的 → 支持」，**长按「检查更新」**会打开“测试更新”弹窗，
+默认走直连 `http://60.205.142.205:8080/downloads/chronoflow-test.apk`；直连慢或不通时
+在弹窗里切到“域名（稳）”的 `https://chronocloud.top/downloads/chronoflow-test.apk`。
+下载后由系统安装器安装。
+每次覆盖同一个文件即可；`versionCode` 仍要递增，否则已经装了新包的手机无法降级覆盖。

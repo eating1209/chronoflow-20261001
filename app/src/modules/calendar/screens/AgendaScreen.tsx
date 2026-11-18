@@ -18,7 +18,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { EventOccurrence, HolidayResponse, SearchResultItem, Task } from '../../../shared/api';
-import { draftsFromItems, type RecognizedDraft } from '../../vision';
+import { type RecognizedDraft } from '../../vision';
 import { askPermission } from '../../../shared/permission';
 import { MonthCalendar } from '../components/MonthCalendar';
 import { WheelDatePicker } from '../components/WheelDatePicker';
@@ -26,6 +26,7 @@ import { ListGroup, ListRow, ListSeparator, SectionHeader } from '../../../share
 import { Card, EmptyState, Pill, Screen } from '../../../shared/ui';
 import { useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
 import { refreshLocalReminders } from '../../notifications';
+import { syncTaskToSystemCalendar } from '../systemCalendar';
 import {
   subscribeTaskBarChanges,
   syncTaskBarNotification,
@@ -42,7 +43,11 @@ import {
 import { APP_TIMEZONE, buildMonthGrid, dateKeyToIso } from '../domain/calendar';
 import { holidayName, toHolidayMarks, yearsSpanned } from '../domain/holiday';
 import { resultBadges, resultDateKey, resultSubtitle, resultTypeLabel } from '../domain/search';
-import { DeviceRecognitionUnavailable, ocrImageText, warmUpOcrEngine } from '../../vision';
+import {
+  DeviceRecognitionUnavailable,
+  recognizeScheduleImage,
+  warmUpOcrEngine,
+} from '../../vision';
 
 /** 检索防抖：每敲一个字就发一次请求既费流量，也会让结果闪。 */
 const SEARCH_DEBOUNCE_MS = 300;
@@ -266,6 +271,11 @@ export function AgendaScreen({
     });
     try {
       await api.completeTask(task.id, completed);
+      await syncTaskToSystemCalendar({
+        ...task,
+        status: nextStatus,
+        completedAt: completed ? new Date().toISOString() : null,
+      });
       await refreshLocalReminders({ api, scheduler: reminders, enabled: notificationEnabled });
     } catch {
       await load();
@@ -349,46 +359,24 @@ export function AgendaScreen({
       return;
     }
     setRecognizing(true);
-    // 各阶段耗时埋点：OCR 与云端解析各自多快，是这条链路调优 / 排障最先要看的东西
-    const pipelineStart = Date.now();
-    let ocrMs = 0;
-    let parseMs = 0;
     try {
-      // ① 端侧 OCR：中文通知这类图，手机本地的 PaddleOCR 又准又不花钱（图片不出手机）
-      const ocrStart = Date.now();
-      const ocrText = await ocrImageText(picked.assets[0].uri);
-      ocrMs = Date.now() - ocrStart;
-      if (!ocrText.trim()) {
+      const result = await recognizeScheduleImage({
+        uri: picked.assets[0].uri,
+        api,
+        today,
+      });
+      if (result.status === 'no-text') {
         Alert.alert('没识别出文字', '这张图里没有识别出可用的文字，换一张再试。');
         return;
       }
-
-      // ② 云端解析：「一段通知里有几件要做的事、哪句是时间」是模型的长处。
-      //    端侧小模型这条路已下线（0.5B 抽一份通知不够用，且把 APK 撑到 570MB）。
-      const parseStart = Date.now();
-      const parsed = await api.parseScheduleText({
-        text: ocrText,
-        today,
-        timezone: APP_TIMEZONE,
-      });
-      parseMs = Date.now() - parseStart;
-      const drafts = draftsFromItems(parsed.items);
-      console.log(
-        `[vision] 耗时：端侧 OCR ${ocrMs}ms（${ocrText.length} 字）→ 云端解析 ${parseMs}ms`
-        + ` → 合计 ${Date.now() - pipelineStart}ms，草稿 ${drafts.length} 条`,
-      );
-      if (drafts.length === 0) {
+      if (result.status === 'no-drafts') {
         // 如实说「没有要做的事」，而不是「识别失败」——两者对用户是两件事
         Alert.alert('没找到要做的事', '这张图里没有找到要做的事。');
         return;
       }
-      // ③ 交给确认页：补日期、改标题，用户确认后才写
-      onReviewDrafts(drafts);
+      // 交给确认页：补日期、改标题，用户确认后才写
+      onReviewDrafts(result.drafts);
     } catch (cause) {
-      console.log(
-        `[vision] 失败于 ${ocrMs === 0 ? '端侧 OCR' : '云端解析'}：`
-        + `OCR ${ocrMs}ms，解析 ${parseMs}ms，合计 ${Date.now() - pipelineStart}ms`,
-      );
       if (cause instanceof DeviceRecognitionUnavailable) {
         Alert.alert(
           '端侧识别还没就绪',

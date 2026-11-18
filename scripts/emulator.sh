@@ -16,6 +16,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_ID="com.chronoflow.frontend"
 DESKTOP="${CHRONOFLOW_DESKTOP_DIR:-/mnt/d/33154/Desktop}"
 WIN_DESKTOP="${CHRONOFLOW_WIN_DESKTOP:-D:\\33154\\Desktop}"
+WIN_USER="${WIN_USER:-33154}"
+WIN_HOME_WSL="/mnt/c/Users/$WIN_USER"
+AVD_NAME="${CHRONOFLOW_AVD:-Medium_Phone_API_37.0}"
+AVD_HOME_WIN="${CHRONOFLOW_AVD_HOME_WIN:-D:\\Android\\avd}"
+AVD_HOME_WSL="${CHRONOFLOW_AVD_HOME_WSL:-/mnt/d/Android/avd}"
+START_LOG="${CHRONOFLOW_EMULATOR_LOG:-/home/eating/start-chronoflow-emulator.log}"
 
 find_sdk() {
   local candidates=(
@@ -41,19 +47,80 @@ if [ -z "$SDK" ]; then
 fi
 ADB="$SDK/platform-tools/adb.exe"
 EMULATOR="$SDK/emulator/emulator.exe"
+TASKLIST="/mnt/c/Windows/System32/tasklist.exe"
+
+win_to_wsl() {
+  local win_path="$1" drive rest
+  win_path="${win_path//\\//}"
+  if [[ "$win_path" =~ ^([A-Za-z]):/(.*)$ ]]; then
+    drive="$(printf '%s' "${BASH_REMATCH[1]}" | tr 'A-Z' 'a-z')"
+    rest="${BASH_REMATCH[2]}"
+    printf '/mnt/%s/%s\n' "$drive" "$rest"
+  fi
+}
+
+find_avd_dir() {
+  local ini="$AVD_HOME_WSL/$AVD_NAME.ini" declared
+  if [ -f "$ini" ]; then
+    declared="$(sed -n 's/^path=//p' "$ini" | tr -d '\r' | head -1)"
+    if [ -n "$declared" ]; then
+      win_to_wsl "$declared"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$AVD_HOME_WSL/$AVD_NAME.avd"
+}
+
+emulator_running() {
+  [ -x "$TASKLIST" ] || return 1
+  "$TASKLIST" /FI 'IMAGENAME eq emulator.exe' /FO CSV /NH 2>/dev/null \
+    | tr -d '\r' | grep -qi 'emulator\.exe' && return 0
+  "$TASKLIST" /FI 'IMAGENAME eq qemu-system-x86_64.exe' /FO CSV /NH 2>/dev/null \
+    | tr -d '\r' | grep -qi 'qemu-system-x86_64\.exe'
+}
 
 cmd="${1:-}"
 case "$cmd" in
   start)
-    AVD="${CHRONOFLOW_AVD:-}"
+    AVD="$AVD_NAME"
     if [ -z "$AVD" ]; then
-      AVD="$("$EMULATOR" -list-avds | tr -d '\r' | head -1)"
+      AVD="$(ANDROID_AVD_HOME="$AVD_HOME_WIN" "$EMULATOR" -list-avds | tr -d '\r' | head -1)"
     fi
     [ -n "$AVD" ] || { echo "✗ 没有可用的 AVD，请先在 Android Studio 的 Device Manager 里建一个。" >&2; exit 1; }
-    echo "→ 启动模拟器：$AVD"
-    ("$EMULATOR" -avd "$AVD" >/dev/null 2>&1 &)
-    "$ADB" wait-for-device
-    echo "✓ 已连接：$("$ADB" devices | tr -d '\r' | sed -n '2p')"
+    AVD_DIR="$(find_avd_dir)"
+    [ -d "$AVD_DIR" ] || { echo "✗ 找不到 AVD 目录：$AVD_DIR" >&2; exit 1; }
+    if ! emulator_running; then
+      shopt -s nullglob
+      for lock in "$AVD_DIR"/*.lock; do
+        echo "→ 清理上次异常退出留下的锁：$(basename "$lock")"
+        rm -rf -- "$lock"
+      done
+      shopt -u nullglob
+    fi
+    echo "→ AVD 目录：$AVD_HOME_WIN"
+    echo "→ 冷启动模拟器：$AVD"
+    : > "$START_LOG"
+    (
+      cd "$WIN_HOME_WSL"
+      ANDROID_AVD_HOME="$AVD_HOME_WIN" "$EMULATOR" -avd "$AVD" -no-snapshot-load -no-boot-anim \
+        >"$START_LOG" 2>&1 &
+    )
+    SERIAL=""
+    for i in $(seq 1 150); do
+      SERIAL="$("$ADB" devices 2>/dev/null | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1; exit}' || true)"
+      [ -n "$SERIAL" ] && break
+      if [ $((i % 15)) -eq 0 ]; then
+        echo "→ 仍在等待模拟器连接 adb（$((i * 2)) 秒）…"
+        if ! emulator_running; then
+          echo "✗ 模拟器进程已经退出。" >&2
+          [ -f "$START_LOG" ] && tail -80 "$START_LOG" >&2
+          exit 1
+        fi
+      fi
+      sleep 2
+    done
+    [ -n "$SERIAL" ] || { echo "✗ 模拟器 5 分钟内没有连上 adb。" >&2; [ -f "$START_LOG" ] && tail -80 "$START_LOG" >&2; exit 1; }
+    echo "✓ 已连接：$SERIAL"
     ;;
 
   install)

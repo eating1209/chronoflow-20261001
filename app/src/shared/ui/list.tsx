@@ -60,6 +60,8 @@ interface ListRowProps {
   leading?: ReactNode;
   trailing?: ReactNode;
   onPress?: () => void;
+  /** 隐藏入口用：正常点击仍走 onPress，长按走这里 */
+  onLongPress?: () => void;
   /** 危险操作（如退出登录）用语义色，但仍然是普通条目，不放大成主按钮 */
   tone?: 'default' | 'danger';
   strikethrough?: boolean;
@@ -71,6 +73,7 @@ export function ListRow({
   leading,
   trailing,
   onPress,
+  onLongPress,
   tone = 'default',
   strikethrough = false,
 }: ListRowProps) {
@@ -108,6 +111,7 @@ export function ListRow({
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
+      onLongPress={onLongPress}
       style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
     >
       {body}

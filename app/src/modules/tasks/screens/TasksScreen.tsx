@@ -15,6 +15,7 @@ import {
   sortTasks,
 } from '../../calendar/pure';
 import { refreshLocalReminders } from '../../notifications';
+import { syncTaskToSystemCalendar } from '../../calendar/systemCalendar';
 import { CompletedTasksCard } from '../components/CompletedTasksCard';
 import { TaskOverviewCard } from '../components/TaskOverviewCard';
 import { eventOverviewEntry, taskOverviewEntry } from '../domain/taskOverview';
@@ -117,6 +118,7 @@ export function TasksScreen({
     });
     try {
       await api.completeTask(task.id, next === 'DONE');
+      await syncTaskToSystemCalendar({ ...task, status: next, completedAt });
     } catch {
       await load();
     }

@@ -6,6 +6,7 @@ import {
   buildUpdateTaskPayload,
   draftFromTask,
   emptyTaskDraft,
+  taskDraftFromRecognized,
   validateTaskDraft,
 } from '../src/modules/tasks/domain/taskDraft';
 import type { Task } from '../src/shared/api';
@@ -54,6 +55,24 @@ describe('待办的重复与提醒', () => {
 });
 
 describe('新建待办草稿', () => {
+  it('识别结果铺成待办：有截止日期就回填，没有日期留在「待安排」', () => {
+    const withDue = taskDraftFromRecognized({
+      title: '交材料',
+      at: '2026-09-24T00:00:00+08:00',
+      timezone: 'Asia/Shanghai',
+      locationName: '教务处',
+    }, '2026-09-20');
+    expect(withDue.hasDue).toBe(true);
+    expect(withDue.dueDate).toBe('2026-09-24');
+    expect(withDue.dueTime).toBe('09:00');
+    expect(withDue.place?.name).toBe('教务处');
+    expect(withDue.description).toContain('请核对');
+
+    const withoutDue = taskDraftFromRecognized({ title: '整理资料' }, '2026-09-20');
+    expect(withoutDue.hasDue).toBe(false);
+    expect(withoutDue.title).toBe('整理资料');
+  });
+
   it('地点、坐标与详细地址会进入请求体，也能从已有待办回填', () => {
     const draft = {
       ...emptyTaskDraft('2026-10-05'),

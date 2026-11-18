@@ -1,4 +1,4 @@
-"""拍照 / 相册 → 日程草稿（spec §4.1.9）。刻意**不自动落库**：结果只作草稿，由用户确认。
+"""拍照 / 相册 → 日程 / 待办草稿（spec §4.1.9）。刻意**不自动落库**：结果只作草稿，由用户确认。
 
 模型会看错，直接写进日历比看错本身更糟——日历是用户唯一的事实来源。
 """
@@ -63,9 +63,10 @@ async def parse_text(
     payload: ParseTextIn | None = None,
     principal: IdentityPrincipal = Depends(current_identity),
 ) -> dict:
-    """OCR 文字 → 日程草稿（**图片不出手机**，这里只收文字）。
+    """OCR 文字 → 日程 / 待办草稿（**图片不出手机**，这里只收文字）。
 
-    返回 `items[]`，每条含 `title`、`at`（**可为空**：通知里没写日期）、`timezone`、`locationName?`、`description?`。
+    返回 `items[]`，每条含 `title`、`kind`（EVENT / TASK）、`at`（**可为空**：通知里没写日期）、
+    `timezone`、`locationName?`、`description?`。
     模型未配置或不可用返回 `90002`（与「图里确实没有要做的事」是两件事：后者返回空 `items`）。
     """
     timezone = (payload.timezone if payload and payload.timezone else VISION_TIMEZONE)

@@ -12,6 +12,7 @@ export {
   clearTaskBarNotification,
   flushPendingTaskBarCompletions,
   requestTaskBarOverlayPermission,
+  requestTaskBarUsageAccess,
   restoreTaskBarOverlay,
   setTaskBarOverlayEnabled,
   subscribeNativeTaskBarCompletion,
@@ -19,6 +20,7 @@ export {
   syncTaskBarNotification,
   taskBarOverlayEnabled,
   taskBarOverlayPermissionGranted,
+  taskBarUsageAccessGranted,
   taskBarNotificationPermissionGranted,
 } from './taskBarNotification';
 
@@ -27,9 +29,11 @@ export {
   buildUpdateTaskPayload,
   draftFromTask,
   emptyTaskDraft,
+  taskDraftFromRecognized,
   switchSnapshotFromTaskDraft,
   taskDraftFromSwitch,
   validateTaskDraft,
   type TaskDraft,
   type TaskDraftValidation,
+  type RecognizedTaskInput,
 } from './domain/taskDraft';

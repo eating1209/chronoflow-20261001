@@ -1,6 +1,17 @@
 import { useEffect, useState } from 'react';
 import { userFacingError } from '../../../shared/errors';
-import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Keyboard,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
+} from 'react-native';
 
 import { Card, Screen, showToast } from '../../../shared/ui';
 import {
@@ -15,6 +26,7 @@ import {
 } from '../../../shared/ui';
 import { useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
 import { WheelDatePicker, WheelLayer, WheelTimePicker } from '../../calendar/components';
+import { removeSystemCalendarTask, syncTaskToSystemCalendar } from '../../calendar/systemCalendar';
 import {
   buildRrule,
   describeRecurrence,
@@ -61,6 +73,7 @@ export function TaskEditorScreen({
   initialReminderSound,
   showKindSwitch = false,
   onSwitchToEvent,
+  onDraftSaved,
   onPickLocation,
   onPickRecurrence,
   onPickReminder,
@@ -81,6 +94,8 @@ export function TaskEditorScreen({
   /** 只有新建时才显示「日程 / 待办」切换；编辑已有内容不显示 */
   showKindSwitch?: boolean;
   onSwitchToEvent?: (snapshot: EditorSwitchSnapshot) => void;
+  /** 草稿模式：保存只把改好的待办交回确认页，不写服务端 */
+  onDraftSaved?: (draft: TaskDraft) => void;
   onPickLocation: () => void;
   /** 第二个参数是待办的截止日期，用来算「每周默认勾哪天」 */
   onPickRecurrence: (current: Recurrence, startDateKey: string) => void;
@@ -93,6 +108,7 @@ export function TaskEditorScreen({
   const { scrollRef, keyboardHeight, scrollToEnd } = useKeyboardAwareScroll();
   const { notificationEnabled, reminderSound: defaultReminderSound } = useAppSessionState();
   const isEdit = typeof taskId === 'number';
+  const draftMode = onDraftSaved !== undefined;
 
   const [draft, setDraft] = useState<TaskDraft>(() => initialDraft ?? emptyTaskDraft(todayKey));
   /** 打开编辑页时服务端上的提醒设置（用于「没改过就不多发一次 PUT」） */
@@ -169,6 +185,7 @@ export function TaskEditorScreen({
   };
 
   const openWheel = (field: 'dueDate' | 'dueTime') => {
+    Keyboard.dismiss();
     setWheelDraft(field === 'dueDate' ? draft.dueDate : draft.dueTime);
     setWheelField(field);
   };
@@ -208,17 +225,18 @@ export function TaskEditorScreen({
       setError(validation.message);
       return;
     }
+    if (onDraftSaved) {
+      setError(null);
+      onDraftSaved(draft);
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      let savedId: number;
-      if (taskId === undefined) {
-        const created = await api.createTask(buildCreateTaskPayload(draft));
-        savedId = created.id;
-      } else {
-        await api.updateTask(taskId, buildUpdateTaskPayload(draft));
-        savedId = taskId;
-      }
+      const savedTask = taskId === undefined
+        ? await api.createTask(buildCreateTaskPayload(draft))
+        : await api.updateTask(taskId, buildUpdateTaskPayload(draft));
+      const savedId = savedTask.id;
       try {
         await persistReminderSettings({
           api,
@@ -245,6 +263,7 @@ export function TaskEditorScreen({
       if (local.permissionDenied && draft.reminders.length > 0) {
         Alert.alert('提醒不会响', '系统还没允许本应用发送通知，请在系统设置里打开通知权限。');
       }
+      await syncTaskToSystemCalendar(savedTask);
       showToast(isEdit ? '待办已更新' : '待办已添加');
       onSaved();
     } catch (cause) {
@@ -269,6 +288,7 @@ export function TaskEditorScreen({
             setError(null);
             try {
               await api.deleteTask(taskId);
+              await removeSystemCalendarTask(taskId);
               // 本机那条排期要跟着消失：重排一次，服务端已经不再返回它
               await refreshLocalReminders({ api, scheduler: reminders, enabled: notificationEnabled });
               showToast('待办已删除');
@@ -298,10 +318,11 @@ export function TaskEditorScreen({
   return (
     <Screen>
       <EditorHeader
-        title={isEdit ? '编辑待办' : showKindSwitch ? '新建安排' : '新建待办'}
+        title={draftMode ? '编辑草稿' : isEdit ? '编辑待办' : showKindSwitch ? '新建安排' : '新建待办'}
         onCancel={onCancel}
         onSave={() => void save()}
         saving={saving}
+        saveLabel={draftMode ? '完成' : '保存'}
       />
 
       {showKindSwitch ? (
@@ -339,7 +360,7 @@ export function TaskEditorScreen({
             placeholder="待办标题"
             accessibilityLabel="待办标题"
             fontSize={18}
-            autoFocus={!isEdit}
+            autoFocus={!isEdit && !draftMode}
           />
         </Card>
 
@@ -372,7 +393,10 @@ export function TaskEditorScreen({
                 */}
                 <FormRow
                   label="重复"
-                  onPress={() => onPickRecurrence(parseRrule(draft.rrule, draft.dueDate), draft.dueDate)}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    onPickRecurrence(parseRrule(draft.rrule, draft.dueDate), draft.dueDate);
+                  }}
                 >
                   <FormRowValue
                     text={recurrence.frequency === 'NONE' ? null : describeRecurrence(recurrence)}
@@ -382,12 +406,13 @@ export function TaskEditorScreen({
 
                 <FormRow
                   label="提醒"
-                  onPress={() =>
+                  onPress={() => {
+                    Keyboard.dismiss();
                     onPickReminder({
                       minutes: normalizeReminders(draft.reminders),
                       sound: reminderSound,
-                    })
-                  }
+                    });
+                  }}
                 >
                   <FormRowValue
                     text={
@@ -401,7 +426,13 @@ export function TaskEditorScreen({
               </>
             ) : null}
 
-            <FormRow label="地点" onPress={onPickLocation}>
+            <FormRow
+              label="地点"
+              onPress={() => {
+                Keyboard.dismiss();
+                onPickLocation();
+              }}
+            >
               <FormRowValue text={draft.place?.name ?? null} placeholder="添加地点" />
             </FormRow>
             {/* 地图常常只定位到楼，教室 / 门牌由用户手填（与地点都可空，spec §5.9） */}

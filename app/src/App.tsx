@@ -4,8 +4,18 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createNavigationContainerRef } from '@react-navigation/native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, Linking, Text, useColorScheme, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  AppState,
+  Linking,
+  Modal,
+  Pressable,
+  Text,
+  useColorScheme,
+  View,
+} from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import {
@@ -17,13 +27,20 @@ import {
 } from './context/AppContext';
 import { createRuntime } from './runtime';
 import { createSecureConsentStore, type ConsentStore } from './auth/consentStore';
+import { withTimeout } from './shared/async';
 import { migrateLegacyStorage } from './shared/auth';
 import { askPermission } from './shared/permission';
 import {
+  DeviceRecognitionUnavailable,
   EventImportScreen,
+  consumeSharedImage,
+  discardSharedImage,
   registerBundledOcrEngine,
+  recognizeScheduleImage,
+  subscribeSharedImages,
   warmUpOcrEngine,
   type DraftEdit,
+  type DraftEditTarget,
   type RecognizedDraft,
 } from './modules/vision';
 import { VoiceInputScreen } from './modules/asr';
@@ -72,6 +89,7 @@ import {
 import {
   AgendaScreen,
   EventEditorScreen,
+  ensureSystemCalendarTaskBackfill,
   LocationPickerScreen,
   RecurrencePickerScreen,
   ReminderPickerScreen,
@@ -96,6 +114,10 @@ import {
   type ReminderSound,
 } from './modules/notifications';
 import { ToastHost } from './shared/ui';
+
+const STARTUP_CONSENT_TIMEOUT_MS = 3_000;
+const STARTUP_RUNTIME_TIMEOUT_MS = 12_000;
+const STARTUP_SESSION_TIMEOUT_MS = 4_000;
 
 type AuthStackParamList = {
   Login: undefined;
@@ -303,6 +325,8 @@ type AppStackParamList = {
   EventImport: { drafts: RecognizedDraft[] };
   /** 确认页里点开的某一条草稿 → 整页编辑器（草稿模式，改完回传、不落库） */
   EventDraftEditor: { draft: EventDraft; dateKey: string };
+  /** 确认页里点开的待办草稿 → 待办编辑器（草稿模式，改完回传、不落库） */
+  TaskDraftEditor: { draft: TaskDraft };
   TaskEditor: {
     taskId?: number;
     /** 从「日程」切过来时预填的新建草稿 */
@@ -440,6 +464,126 @@ function MainStack() {
     setTaskBarEnabled,
   } = useAppSessionState();
   const { api, reminders } = useRuntime();
+  const calendarTaskBackfillStarted = useRef(false);
+  const theme = useAppTheme();
+  const [shareRecognizing, setShareRecognizing] = useState(false);
+  const [pendingSharedDrafts, setPendingSharedDrafts] = useState<RecognizedDraft[] | null>(null);
+  const sharedImportBusyRef = useRef(false);
+
+  useEffect(() => {
+    if (calendarTaskBackfillStarted.current) {
+      return;
+    }
+    calendarTaskBackfillStarted.current = true;
+    void ensureSystemCalendarTaskBackfill(api);
+  }, [api]);
+
+  const importSharedImage = useCallback(async (uri: string) => {
+    if (sharedImportBusyRef.current) {
+      return;
+    }
+    sharedImportBusyRef.current = true;
+    setShareRecognizing(true);
+    try {
+      const result = await recognizeScheduleImage({ uri, api, today });
+      if (result.status === 'no-text') {
+        Alert.alert('没识别出文字', '这张截图里没有识别出可用的文字，换一张再试。');
+        return;
+      }
+      if (result.status === 'no-drafts') {
+        Alert.alert('没找到要做的事', '这张截图里没有找到要做的事。');
+        return;
+      }
+      setPendingSharedDrafts(result.drafts);
+    } catch (cause) {
+      if (cause instanceof DeviceRecognitionUnavailable) {
+        Alert.alert(
+          '端侧识别还没就绪',
+          `${cause.message}\n\n识别全程在手机本地完成，不会把图片上传到服务器。`,
+        );
+      } else {
+        Alert.alert('截图识别失败', '这张图没有识别成功，请稍后重试。');
+      }
+    } finally {
+      discardSharedImage(uri);
+      sharedImportBusyRef.current = false;
+      setShareRecognizing(false);
+    }
+  }, [api, today]);
+
+  const consumeSharedImageIfAny = useCallback(async () => {
+    if (sharedImportBusyRef.current) {
+      return;
+    }
+    try {
+      const shared = await consumeSharedImage();
+      if (!shared) {
+        return;
+      }
+      if (shared.error) {
+        Alert.alert('截图导入失败', shared.error);
+        return;
+      }
+      if (shared.uri) {
+        await importSharedImage(shared.uri);
+      }
+    } catch {
+      Alert.alert('截图导入失败', '没有读到这张图片，请重新分享一次。');
+    }
+  }, [importSharedImage]);
+
+  /** 系统分享图片进来：冷启动主动取一次，运行中由原生事件 / 回前台再取。 */
+  useEffect(() => {
+    let cancelled = false;
+    const consume = () => {
+      if (!cancelled) {
+        void consumeSharedImageIfAny();
+      }
+    };
+    consume();
+    const offShare = subscribeSharedImages(consume);
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        consume();
+      }
+    });
+    return () => {
+      cancelled = true;
+      offShare();
+      subscription.remove();
+    };
+  }, [consumeSharedImageIfAny]);
+
+  /** 识别出草稿后再跳确认页：首次启动时导航树可能还没 ready，最多等 3 秒。 */
+  useEffect(() => {
+    if (!pendingSharedDrafts) {
+      return;
+    }
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const open = () => {
+      if (cancelled) {
+        return;
+      }
+      if (navigationRef.isReady()) {
+        navigationRef.navigate('EventImport', { drafts: pendingSharedDrafts });
+        setPendingSharedDrafts(null);
+        return;
+      }
+      if (attempts < 20) {
+        attempts += 1;
+        timer = setTimeout(open, 150);
+      }
+    };
+    open();
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [pendingSharedDrafts]);
 
   /**
    * 注册端侧 OCR 引擎（spec §4.1.9）。
@@ -664,7 +808,8 @@ function MainStack() {
   }, [pendingRoute, today]);
 
   return (
-    <AppStack.Navigator screenOptions={{ headerShown: false }}>
+    <>
+      <AppStack.Navigator screenOptions={{ headerShown: false }}>
       <AppStack.Screen name="Main">
         {({ navigation }) => (
           <MainTabs
@@ -793,13 +938,20 @@ function MainStack() {
           <EventImportScreen
             drafts={route.params.drafts}
             draftEdit={draftEdit}
-            onEditDraft={(key, draft, dateKey) => {
+            onEditDraft={(key, target: DraftEditTarget) => {
               // 进草稿编辑器前清掉二级页的回传，避免上一次选的地点 / 重复 / 提醒串进来
               setPlaceSelection({ version: 0, place: null });
               setRecurrenceSelection({ version: 0, recurrence: null });
               setReminderSelection({ version: 0, minutes: [], sound: DEFAULT_REMINDER_SOUND });
               setEditingImportKey(key);
-              navigation.navigate('EventDraftEditor', { draft, dateKey: dateKey ?? today });
+              if (target.kind === 'EVENT') {
+                navigation.navigate('EventDraftEditor', {
+                  draft: target.draft,
+                  dateKey: target.dateKey ?? today,
+                });
+              } else {
+                navigation.navigate('TaskDraftEditor', { draft: target.draft });
+              }
             }}
             onCancel={() => navigation.goBack()}
             // 全部添加成功 → 回日历；日历页的 useFocusEffect 会自动重新拉取，新建的日程立刻可见
@@ -826,8 +978,38 @@ function MainStack() {
               setDraftEdit((current) => ({
                 version: (current?.version ?? 0) + 1,
                 key: editingImportKey,
+                kind: 'EVENT',
                 draft,
                 dateKey,
+              }));
+              navigation.goBack();
+            }}
+            onCancel={() => navigation.goBack()}
+            onSaved={() => navigation.goBack()}
+          />
+        )}
+      </AppStack.Screen>
+
+      <AppStack.Screen name="TaskDraftEditor">
+        {({ navigation, route }) => (
+          <TaskEditorScreen
+            todayKey={today}
+            initialDraft={route.params.draft}
+            showKindSwitch={false}
+            placeSelection={placeSelection}
+            recurrenceSelection={recurrenceSelection}
+            reminderSelection={reminderSelection}
+            onPickLocation={() => navigation.navigate('LocationPicker')}
+            onPickRecurrence={(current, startDateKey) =>
+              navigation.navigate('RecurrencePicker', { startDateKey, initial: current })
+            }
+            onPickReminder={(current) => navigation.navigate('ReminderPicker', { initial: current })}
+            onDraftSaved={(draft) => {
+              setDraftEdit((current) => ({
+                version: (current?.version ?? 0) + 1,
+                key: editingImportKey,
+                kind: 'TASK',
+                draft,
               }));
               navigation.goBack();
             }}
@@ -1013,7 +1195,57 @@ function MainStack() {
         )}
       </AppStack.Screen>
 
-    </AppStack.Navigator>
+      </AppStack.Navigator>
+      <Modal
+        transparent
+        visible={shareRecognizing}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => undefined}
+      >
+        <View
+          style={{
+            flex: 1,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.28)',
+          }}
+        >
+          <View
+            style={{
+              minWidth: 228,
+              borderRadius: 18,
+              paddingHorizontal: 26,
+              paddingVertical: 24,
+              alignItems: 'center',
+              backgroundColor: theme.color.surfaceRaised,
+            }}
+          >
+            <ActivityIndicator color={theme.color.accent} />
+            <Text
+              style={{
+                marginTop: 14,
+                color: theme.color.textPrimary,
+                fontSize: 16,
+                fontWeight: '600',
+              }}
+            >
+              正在识别截图…
+            </Text>
+            <Text
+              style={{
+                marginTop: 7,
+                color: theme.color.textTertiary,
+                fontSize: 12,
+                textAlign: 'center',
+              }}
+            >
+              图片只在手机本地识别，不会上传
+            </Text>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -1022,6 +1254,8 @@ function Root() {
   const { runtime, setRuntime } = useRuntimeState();
   const { session, setSession } = useAppSessionState();
   const [booting, setBooting] = useState(true);
+  const [bootError, setBootError] = useState(false);
+  const [bootAttempt, setBootAttempt] = useState(0);
   /**
    * 首启隐私政策同意（规范 §四 D1/D3）。
    *
@@ -1038,15 +1272,29 @@ function Root() {
       try {
         // 改名遗留（xa-todo.* → chronoflow.*）：**必须在读任何存储之前**搬完，
         // 否则老包升上来的用户会莫名其妙掉登录态、重弹隐私同意
-        await migrateLegacyStorage();
-        const store = await createSecureConsentStore();
+        await withTimeout(
+          migrateLegacyStorage(),
+          STARTUP_CONSENT_TIMEOUT_MS,
+          '迁移本地存储超时',
+        );
+        const store = await withTimeout(
+          createSecureConsentStore(),
+          STARTUP_CONSENT_TIMEOUT_MS,
+          '初始化隐私存储超时',
+        );
         if (cancelled) {
           return;
         }
         consentStoreRef.current = store;
-        setNeedsConsent(!hasAcceptedPolicy(await store.read()));
-      } catch {
+        const record = await withTimeout(
+          store.read(),
+          STARTUP_CONSENT_TIMEOUT_MS,
+          '读取隐私记录超时',
+        );
+        setNeedsConsent(!hasAcceptedPolicy(record));
+      } catch (error) {
         // 安全存储不可用（例如 Web 预览）：按「没同意过」处理，宁可多弹一次
+        console.warn('[startup] 隐私状态读取失败，按未同意处理', error);
         if (!cancelled) {
           setNeedsConsent(true);
         }
@@ -1064,22 +1312,51 @@ function Root() {
   const acceptConsent = () => {
     const record = buildConsentRecord();
     setNeedsConsent(false);
-    void consentStoreRef.current?.write(record);
+    const pending = consentStoreRef.current?.write(record);
+    void pending?.catch(() => undefined);
   };
 
   useEffect(() => {
     let cancelled = false;
+    setBooting(true);
+    setBootError(false);
     void (async () => {
       try {
-        const created = await createRuntime(() => {
-          void setSession(null);
-        });
+        const created = await withTimeout(
+          createRuntime(() => {
+            void setSession(null);
+          }),
+          STARTUP_RUNTIME_TIMEOUT_MS,
+          '启动超时',
+        );
         if (cancelled) {
           return;
         }
         setRuntime(created);
         // 冷启动：读取安全存储中的会话，必要时在首次请求前静默续期
-        setSession(await created.session.restore());
+        try {
+          const restored = await withTimeout(
+            created.session.restore(),
+            STARTUP_SESSION_TIMEOUT_MS,
+            '恢复登录状态超时',
+          );
+          if (!cancelled) {
+            setSession(restored);
+          }
+        } catch (error) {
+          // 会话坏了只影响登录态，不应该把整个 App 卡在启动页
+          console.warn('[startup] 恢复登录状态失败，进入登录页', error);
+          if (!cancelled) {
+            setSession(null);
+          }
+        }
+      } catch (error) {
+        console.warn('[startup] 应用初始化失败', error);
+        if (!cancelled) {
+          setRuntime(null);
+          setSession(null);
+          setBootError(true);
+        }
       } finally {
         if (!cancelled) {
           setBooting(false);
@@ -1089,7 +1366,67 @@ function Root() {
     return () => {
       cancelled = true;
     };
-  }, [setRuntime, setSession]);
+  }, [bootAttempt, setRuntime, setSession]);
+
+  if (bootError) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingHorizontal: 32,
+          backgroundColor: theme.color.bg,
+        }}
+      >
+        <Text
+          style={{
+            color: theme.color.textPrimary,
+            fontSize: 18,
+            fontWeight: '600',
+            textAlign: 'center',
+          }}
+        >
+          启动没有完成
+        </Text>
+        <Text
+          style={{
+            color: theme.color.textTertiary,
+            fontSize: 14,
+            lineHeight: 21,
+            marginTop: 10,
+            textAlign: 'center',
+          }}
+        >
+          读取本地数据时出了点问题，重新试一次通常就能恢复。
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setBootAttempt((attempt) => attempt + 1)}
+          style={({ pressed }) => ({
+            marginTop: 24,
+            minWidth: 132,
+            paddingHorizontal: 24,
+            paddingVertical: 12,
+            borderRadius: theme.radius.button,
+            backgroundColor: theme.color.accent,
+            opacity: pressed ? 0.8 : 1,
+          })}
+        >
+          <Text
+            style={{
+              color: theme.color.accentContrast,
+              fontSize: 15,
+              fontWeight: '600',
+              textAlign: 'center',
+            }}
+          >
+            重新尝试
+          </Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   if (booting || !runtime || !consentChecked) {
     return (

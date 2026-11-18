@@ -22,6 +22,12 @@ const REQUIRED_PERMISSIONS = [
   'android.permission.SYSTEM_ALERT_WINDOW',
   'android.permission.FOREGROUND_SERVICE',
   'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
+  'android.permission.GET_TASKS',
+  'android.permission.PACKAGE_USAGE_STATS',
+  // expo-notifications 的 AAR 清单正常由 Gradle 合并进来；这里再声明一次，
+  // 避免手工重建清单时漏掉通知权限，导致开关点了没反应。
+  'android.permission.POST_NOTIFICATIONS',
+  'android.permission.RECEIVE_BOOT_COMPLETED',
   // 系统日历单向导出（CalendarSyncModule）：读用来找可写日历，写用来维护我们自己的条目。
   'android.permission.READ_CALENDAR',
   'android.permission.WRITE_CALENDAR',
@@ -72,6 +78,34 @@ function injectTaskBarManifest(manifest) {
     }
   }
   manifest['uses-permission'] = permissions;
+
+  // Android 11+ 默认隐藏其它应用。任务条要判断当前是不是桌面，必须显式声明
+  // 可以查询 HOME Activity；否则部分 ROM 只返回解析器，随后把真正的桌面误判成
+  // “其他应用”，表现为桌面上仍显示细条。
+  const queries = manifest.queries ?? [];
+  const query = queries[0] ?? {};
+  const intents = query.intent ?? [];
+  const hasHomeQuery = intents.some((intent) => {
+    const actions = intent.action ?? [];
+    const categories = intent.category ?? [];
+    return (
+      actions.some((item) => item.$?.['android:name'] === 'android.intent.action.MAIN') &&
+      categories.some(
+        (item) => item.$?.['android:name'] === 'android.intent.category.HOME',
+      )
+    );
+  });
+  if (!hasHomeQuery) {
+    intents.push({
+      action: [{ $: { 'android:name': 'android.intent.action.MAIN' } }],
+      category: [{ $: { 'android:name': 'android.intent.category.HOME' } }],
+    });
+  }
+  query.intent = intents;
+  if (queries.length === 0) {
+    queries.push(query);
+  }
+  manifest.queries = queries;
 
   const application = manifest.application?.[0];
   if (!application) {

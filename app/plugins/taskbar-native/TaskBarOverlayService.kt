@@ -8,7 +8,10 @@ import android.app.Service
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
+import android.app.AppOpsManager
 import android.app.KeyguardManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -25,8 +28,10 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -56,6 +61,7 @@ import kotlin.math.roundToInt
 class TaskBarOverlayService : Service() {
 
     companion object {
+        private const val TAG = "ChronoFlowTaskBar"
         private const val ACTION_STOP = "com.chronoflow.frontend.TASKBAR_OVERLAY_STOP"
 
         /** 用户把「顶部任务小条」通知上滑划掉时，直接关掉悬浮条。 */
@@ -71,26 +77,39 @@ class TaskBarOverlayService : Service() {
         private const val COLOR_SOON = 0xFFB58500.toInt()
         private const val COLOR_CALM = 0xFF2E7D5B.toInt()
 
-        /** 抬到状态栏中间：上半部分不挡桌面，底部仍留在可触摸安全区。 */
-        private const val OVERLAY_UP_SHIFT_DP = 18
+        /** 黑色胶囊抬到状态栏这一行，桌面/其他 App 都使用同一个视觉高度。 */
+        private const val STATUS_BAR_OVERLAP_DP = 26
 
-        /** 悬浮窗被系统临时摘掉时，最多 2 秒内重新挂回去。 */
-        private const val WINDOW_WATCHDOG_MS = 2_000L
+        /** 悬浮窗被系统临时摘掉时尽快重新挂回去，同时让桌面/其他 App 的切换更跟手。 */
+        private const val WINDOW_WATCHDOG_MS = 400L
 
         /** 系统弹层（通知栏、权限弹窗等）收起后，等系统动画结束再重新置顶。 */
-        private const val SYSTEM_UI_SETTLE_MS = 350L
+        private const val SYSTEM_UI_SETTLE_MS = 180L
 
         /** 展开任务卡后自动收回，避免一直挡着别的 App。 */
         private const val EXPANDED_AUTO_RETRACT_MS = 8_000L
 
-        /** 在细条上点一下后短暂恢复原胶囊；过期后仍按桌面识别结果自动缩回。 */
-        private const val FULL_CAPSULE_OVERRIDE_MS = 12_000L
+        /** 按下 Home 后先按桌面处理，给任务栈识别留出系统切换时间。 */
+        private const val HOME_ASSUME_MS = 6_000L
+
+        /** 使用情况事件只用来发现“刚发生的切换”；当前场景由最近一次可靠结果保持。 */
+        private const val USAGE_LOOKBACK_MS = 30_000L
 
         /** 窗口被厂商 ROM 暂时拒绝时退避重试，不把用户的悬浮条开关直接关掉。 */
         private const val WINDOW_RETRY_BASE_MS = 300L
         private const val WINDOW_RETRY_MAX_MS = 4_000L
 
-        private const val COMPACT_BAR_HEIGHT_DP = 18
+        /** 视觉上仍是细条，但透明触摸区扩大到 40dp，避免手指点不中。 */
+        private const val TOUCH_TARGET_HEIGHT_DP = 40
+        private const val COMPACT_PILL_HEIGHT_DP = 14
+        private const val FULL_PILL_HEIGHT_DP = 30
+
+        /** 桌面完整胶囊：触摸区 48dp，视觉高度仍是 30dp。 */
+        private const val FULL_TOUCH_TARGET_HEIGHT_DP = 48
+
+        /** 桌面完整胶囊整体放在状态栏下方 4dp，避免触摸被系统状态栏截走。 */
+        private const val FULL_PILL_TOP_GAP_DP = 4
+        private const val HORIZONTAL_TOUCH_PADDING_DP = 12
 
         @Volatile
         private var active: TaskBarOverlayService? = null
@@ -106,7 +125,11 @@ class TaskBarOverlayService : Service() {
 
         internal fun start(context: Context) {
             val intent = Intent(context, TaskBarOverlayService::class.java)
-            ContextCompat.startForegroundService(context, intent)
+            // 调用点都在 App 前台（用户刚点了开关，或从授权页返回）。
+            // 不用 startForegroundService：万一某些 ROM 拒绝 startForeground，
+            // 系统会在 5 秒后追加一次“未调用 startForeground”的进程崩溃。
+            // 普通 startService + 服务内 startForeground 的失败可由我们自己兜住。
+            context.startService(intent)
         }
 
         internal fun stop(context: Context) {
@@ -128,9 +151,6 @@ class TaskBarOverlayService : Service() {
 
         internal fun isLauncherForeground(): Boolean =
             active?.launcherForeground == true
-
-        internal fun isManualFullActive(): Boolean =
-            (active?.manualFullUntil ?: 0L) > SystemClock.elapsedRealtime()
 
         internal fun windowRetryAttempts(): Int = active?.windowRetryAttempt ?: 0
 
@@ -164,7 +184,14 @@ class TaskBarOverlayService : Service() {
     private var selectedGroupKey: String? = null
     private var presentation = Presentation.FULL
     private var launcherForeground = false
-    private var manualFullUntil = 0L
+    private var launcherAssumedUntil = 0L
+    private var launcherAssumedAfterWall = 0L
+    private var observedScene = ForegroundScene.UNKNOWN
+    private var usageForeground: String? = null
+    private var usageForegroundAt = 0L
+    private var usageCachedScene: ForegroundScene? = null
+    private var usageCheckedAt = 0L
+    private var lastLoggedScene = ForegroundScene.UNKNOWN
     private var windowRetryAttempt = 0
     private var windowRetryScheduled = false
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -173,6 +200,12 @@ class TaskBarOverlayService : Service() {
     private enum class Presentation {
         COMPACT,
         FULL,
+    }
+
+    private enum class ForegroundScene {
+        LAUNCHER,
+        OTHER_APP,
+        UNKNOWN,
     }
 
     private val watchdogRunnable = object : Runnable {
@@ -213,7 +246,13 @@ class TaskBarOverlayService : Service() {
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                Intent.ACTION_CLOSE_SYSTEM_DIALOGS -> scheduleWindowReassert()
+                Intent.ACTION_CLOSE_SYSTEM_DIALOGS -> {
+                    val reason = intent.getStringExtra("reason")
+                    if (reason.isNullOrBlank() || reason == "homekey") {
+                        showDesktopCapsule()
+                    }
+                    scheduleWindowReassert()
+                }
                 Intent.ACTION_CONFIGURATION_CHANGED -> scheduleRender(0L)
                 Intent.ACTION_USER_PRESENT -> {
                     scheduleRender(0L)
@@ -251,28 +290,50 @@ class TaskBarOverlayService : Service() {
         super.onCreate()
         active = this
         lastWindowError = ""
-        ensureChannel()
-        startForegroundCompat()
-        (application as? Application)?.registerActivityLifecycleCallbacks(lifecycleCallbacks)
-        ContextCompat.registerReceiver(
-            this,
-            screenStateReceiver,
-            IntentFilter().apply {
-                addAction(Intent.ACTION_SCREEN_OFF)
-                addAction(Intent.ACTION_SCREEN_ON)
-                addAction(Intent.ACTION_USER_PRESENT)
-                addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
-                addAction(Intent.ACTION_CONFIGURATION_CHANGED)
-            },
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
-        if (!Settings.canDrawOverlays(this)) {
+        try {
+            ensureChannel()
+            startForegroundCompat()
+        } catch (error: Throwable) {
+            // Android 14/15 对 specialUse 前台服务、通知渠道和部分 ROM 的厂商策略
+            // 都可能在 startForeground 时抛异常。它发生在主线程，不兜住就是整个
+            // App 闪退。这里只关闭悬浮条，通知卡和其他功能继续可用。
+            lastWindowError = "startForeground: ${error.javaClass.simpleName}: ${error.message ?: "unknown"}"
+            Log.e(TAG, "无法启动顶部小条前台服务", error)
             TaskBarNotificationCore.setOverlayWanted(this, false)
+            if (active === this) {
+                active = null
+            }
             stopSelf()
             return
         }
-        showWindow()
-        startWatchdog()
+        try {
+            (application as? Application)?.registerActivityLifecycleCallbacks(lifecycleCallbacks)
+            ContextCompat.registerReceiver(
+                this,
+                screenStateReceiver,
+                IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                    addAction(Intent.ACTION_SCREEN_ON)
+                    addAction(Intent.ACTION_USER_PRESENT)
+                    addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
+                    addAction(Intent.ACTION_CONFIGURATION_CHANGED)
+                },
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            if (!Settings.canDrawOverlays(this)) {
+                TaskBarNotificationCore.setOverlayWanted(this, false)
+                stopSelf()
+                return
+            }
+            showWindow()
+            startWatchdog()
+        } catch (error: Throwable) {
+            lastWindowError = "serviceInit: ${error.javaClass.simpleName}: ${error.message ?: "unknown"}"
+            Log.e(TAG, "顶部小条初始化失败", error)
+            TaskBarNotificationCore.setOverlayWanted(this, false)
+            removeWindow()
+            stopSelf()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -317,6 +378,19 @@ class TaskBarOverlayService : Service() {
     }
 
     private fun render() {
+        try {
+            renderNow()
+        } catch (error: Throwable) {
+            // 任何 ROM 的 RemoteViews / 窗口行为差异都不应该把 App 进程带走。
+            lastWindowError = "render: ${error.javaClass.simpleName}: ${error.message ?: "unknown"}"
+            Log.e(TAG, "顶部小条渲染失败", error)
+            expanded = false
+            removeWindow()
+            scheduleWindowRetry()
+        }
+    }
+
+    private fun renderNow() {
         if (!Settings.canDrawOverlays(this)) {
             TaskBarNotificationCore.setOverlayWanted(this, false)
             stopSelf()
@@ -388,7 +462,7 @@ class TaskBarOverlayService : Service() {
         rootView = null
     }
 
-    private fun scheduleRender(delayMs: Long = 150L) {
+    private fun scheduleRender(delayMs: Long = 60L) {
         mainHandler.postDelayed({
             if (active === this) {
                 render()
@@ -449,13 +523,41 @@ class TaskBarOverlayService : Service() {
     /**
      * 桌面显示原胶囊；其他 App 里默认缩成细条。
      *
-     * <p>没有“使用情况访问”权限时，部分 ROM 不会返回桌面的进程信息。此时统一使用
-     * 细条兜底，用户点一下仍可看到原胶囊和完整任务卡。
+     * <p>使用情况事件负责发现 App 切换，并保留最近一次可靠场景；任务栈和进程列表
+     * 只补“当前在桌面”的证据。这样旧 App 的历史事件不会在回到桌面 6 秒后又把
+     * 胶囊缩成细条。判断不出来时保持原胶囊。
      */
     private fun desiredPresentation(): Presentation {
-        launcherForeground = isDefaultLauncherForeground()
-        val manualFull = SystemClock.elapsedRealtime() < manualFullUntil
-        return if (launcherForeground || manualFull) Presentation.FULL else Presentation.COMPACT
+        val scene = if (SystemClock.elapsedRealtime() < launcherAssumedUntil) {
+            observedScene = ForegroundScene.LAUNCHER
+            ForegroundScene.LAUNCHER
+        } else {
+            foregroundScene()
+        }
+        if (scene != lastLoggedScene) {
+            lastLoggedScene = scene
+            Log.d(TAG, "前台场景=$scene usage=${usageForeground ?: "-"}")
+        }
+        launcherForeground = scene == ForegroundScene.LAUNCHER
+        // 其它应用内才缩成细条；桌面和暂时判断不出来时保持原胶囊，避免回桌面时先闪一下细条。
+        return if (scene == ForegroundScene.OTHER_APP) {
+            Presentation.COMPACT
+        } else {
+            Presentation.FULL
+        }
+    }
+
+    /** Home 键会先于使用情况统计生效；直接切回原胶囊，避免先露出细条再变回来。 */
+    private fun showDesktopCapsule() {
+        val now = SystemClock.elapsedRealtime()
+        launcherAssumedUntil = now + HOME_ASSUME_MS
+        launcherAssumedAfterWall = System.currentTimeMillis()
+        observedScene = ForegroundScene.LAUNCHER
+        launcherForeground = true
+        presentation = Presentation.FULL
+        expanded = false
+        mainHandler.removeCallbacks(autoRetractRunnable)
+        scheduleRender(0L)
     }
 
     private fun syncPresentation() {
@@ -474,35 +576,250 @@ class TaskBarOverlayService : Service() {
         render()
     }
 
-    private fun isDefaultLauncherForeground(): Boolean {
-        val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-        val homePackage = packageManager
-            .resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
-            ?.activityInfo
-            ?.packageName
-            ?: return false
-        val activityManager = getSystemService(ActivityManager::class.java) ?: return false
-        val processes = activityManager.runningAppProcesses ?: return false
+    private fun foregroundScene(): ForegroundScene {
+        val homePackages = resolveHomePackages()
+        if (homePackages.isEmpty()) {
+            return ForegroundScene.UNKNOWN
+        }
+        val activityManager = getSystemService(ActivityManager::class.java)
+            ?: return ForegroundScene.UNKNOWN
+
+        val hasUsage = hasUsageAccess()
+        val usageScene = if (hasUsage) recentUsageScene(homePackages) else null
+        if (usageScene != null) {
+            observedScene = usageScene
+        }
+
+        // 有使用情况权限时，App 切换事件比任务栈更可靠。任务栈和进程列表只用来
+        // 补出“当前确实在桌面”的证据，不能再把已经确认的桌面翻回细条。
+        if (hasUsage) {
+            val topTask = topTaskPackage(activityManager)
+            if (topTask != null && isLauncherPackage(topTask, homePackages)) {
+                observedScene = ForegroundScene.LAUNCHER
+            } else if (usageScene == null && observedScene == ForegroundScene.UNKNOWN) {
+                classifyForegroundPackage(topTask, homePackages)?.let {
+                    observedScene = it
+                }
+            }
+            val processScene = foregroundProcessScene(activityManager, homePackages)
+            if (processScene == ForegroundScene.LAUNCHER) {
+                observedScene = ForegroundScene.LAUNCHER
+            } else if (usageScene == null && observedScene == ForegroundScene.UNKNOWN) {
+                observedScene = processScene ?: ForegroundScene.UNKNOWN
+            }
+            return observedScene
+        }
+
+        val topScene = classifyForegroundPackage(
+            topTaskPackage(activityManager),
+            homePackages,
+        )
+        // 没有使用情况权限时，进程列表可能把桌面的常驻进程误当成前台 App。
+        // 只有任务栈确认在桌面才据此展开；其他情况保持原胶囊，宁可少缩一次，
+        // 也不能在桌面反复闪成细条。
+        if (topScene == ForegroundScene.LAUNCHER) {
+            return ForegroundScene.LAUNCHER
+        }
+        if (foregroundProcessScene(activityManager, homePackages) == ForegroundScene.LAUNCHER) {
+            return ForegroundScene.LAUNCHER
+        }
+        return ForegroundScene.UNKNOWN
+    }
+
+    private fun foregroundProcessScene(
+        activityManager: ActivityManager,
+        homePackages: Set<String>,
+    ): ForegroundScene? {
+        val processes = activityManager.runningAppProcesses ?: return ForegroundScene.UNKNOWN
         if (processes.size <= 1) {
-            // 部分系统只返回时纪流自己的进程；无法确认桌面时用细条兜底。
-            return false
+            // 部分系统只返回时纪流自己的进程；判断不出场景时保持原胶囊。
+            return null
         }
         val foreground = processes.filter {
             it.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
         }
         if (foreground.isEmpty()) {
-            return false
+            return null
         }
-        val homeInFront = foreground.any { process ->
-            process.processName == homePackage || process.processName.startsWith("$homePackage:")
+        val homeInFront = foreground.any {
+            isLauncherPackage(processPackage(it.processName), homePackages)
         }
         val otherAppInFront = foreground.any { process ->
-            process.processName != homePackage &&
-                !process.processName.startsWith("$homePackage:") &&
-                process.processName != packageName &&
-                !process.processName.startsWith("$packageName:")
+            val name = processPackage(process.processName)
+            !isLauncherPackage(name, homePackages) &&
+                name != packageName &&
+                !isSystemUiPackage(name) &&
+                isLaunchablePackage(name)
         }
-        return homeInFront && !otherAppInFront
+        return when {
+            otherAppInFront -> ForegroundScene.OTHER_APP
+            homeInFront -> ForegroundScene.LAUNCHER
+            else -> null
+        }
+    }
+
+    private fun classifyForegroundPackage(
+        foregroundPackage: String?,
+        homePackages: Set<String>,
+    ): ForegroundScene? = when {
+        foregroundPackage == null -> null
+        isLauncherPackage(foregroundPackage, homePackages) -> ForegroundScene.LAUNCHER
+        foregroundPackage == packageName || isSystemUiPackage(foregroundPackage) -> null
+        else -> ForegroundScene.OTHER_APP
+    }
+
+    private fun resolveHomePackages(): Set<String> {
+        val packages = mutableSetOf<String>()
+        val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        packageManager
+            .queryIntentActivities(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            .forEach { info ->
+                info.activityInfo?.packageName?.let { packages.add(it) }
+            }
+        packageManager
+            .resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            ?.activityInfo
+            ?.packageName
+            ?.let { packages.add(it) }
+        return packages
+    }
+
+    private fun isLauncherPackage(
+        candidate: String,
+        homePackages: Set<String>,
+    ): Boolean = candidate in homePackages ||
+        candidate == "com.miui.home" ||
+        candidate.contains("launcher", ignoreCase = true)
+
+    @Suppress("DEPRECATION")
+    private fun topTaskPackage(activityManager: ActivityManager): String? {
+        return try {
+            activityManager.getRunningTasks(6)
+                .firstOrNull { it.topActivity != null }
+                ?.topActivity
+                ?.packageName
+        } catch (_: SecurityException) {
+            null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * Android 14+ 上进程列表经常只剩自己，使用情况访问是唯一稳定能看到前台应用的方式。
+     *
+     * <p>这里按事件顺序还原最后一次切换。除了“新 App 恢复前台”，也处理“旧 App
+     * 退到后台”：部分桌面不记录自己的恢复事件，但旧 App 的暂停事件仍会到达。
+     */
+    private fun recentUsageScene(homePackages: Set<String>): ForegroundScene? {
+        val now = SystemClock.elapsedRealtime()
+        if (now - usageCheckedAt < 200L) {
+            return usageCachedScene
+        }
+        usageCheckedAt = now
+        if (!hasUsageAccess()) {
+            usageForeground = null
+            usageCachedScene = null
+            return null
+        }
+        val manager = getSystemService(UsageStatsManager::class.java) ?: return null
+        val end = System.currentTimeMillis()
+        val start = maxOf(end - USAGE_LOOKBACK_MS, launcherAssumedAfterWall)
+        if (start >= end) {
+            usageCachedScene = null
+            return null
+        }
+        val events = try {
+            manager.queryEvents(start, end)
+        } catch (_: Throwable) {
+            null
+        } ?: return null
+        val event = UsageEvents.Event()
+        val resumedType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            UsageEvents.Event.ACTIVITY_RESUMED
+        } else {
+            @Suppress("DEPRECATION")
+            UsageEvents.Event.MOVE_TO_FOREGROUND
+        }
+        val pausedType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            UsageEvents.Event.ACTIVITY_PAUSED
+        } else {
+            @Suppress("DEPRECATION")
+            UsageEvents.Event.MOVE_TO_BACKGROUND
+        }
+        var scene: ForegroundScene? = null
+        var currentPackage: String? = null
+        var latestAt = 0L
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            when (event.eventType) {
+                resumedType -> {
+                    if (isSystemUiPackage(event.packageName)) {
+                        continue
+                    }
+                    currentPackage = event.packageName
+                    latestAt = event.timeStamp
+                    scene = when {
+                        isLauncherPackage(event.packageName, homePackages) ->
+                            ForegroundScene.LAUNCHER
+                        event.packageName == packageName -> ForegroundScene.UNKNOWN
+                        else -> ForegroundScene.OTHER_APP
+                    }
+                }
+                pausedType -> {
+                    if (event.packageName == currentPackage) {
+                        currentPackage = null
+                        latestAt = event.timeStamp
+                        scene = ForegroundScene.UNKNOWN
+                    }
+                }
+            }
+        }
+        usageForeground = currentPackage
+        usageForegroundAt = latestAt
+        usageCachedScene = scene
+        return scene
+    }
+
+    private fun hasUsageAccess(): Boolean {
+        val appOps = getSystemService(AppOpsManager::class.java) ?: return false
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            appOps.unsafeCheckOpNoThrow(
+                AppOpsManager.OPSTR_GET_USAGE_STATS,
+                Process.myUid(),
+                packageName,
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            appOps.checkOpNoThrow(
+                AppOpsManager.OPSTR_GET_USAGE_STATS,
+                Process.myUid(),
+                packageName,
+            )
+        }
+        return mode == AppOpsManager.MODE_ALLOWED
+    }
+
+    private fun processPackage(processName: String): String = processName.substringBefore(':')
+
+    private fun isSystemUiPackage(packageName: String): Boolean =
+        packageName == "com.android.systemui" ||
+            packageName == "com.android.settings" ||
+            packageName == "com.android.phone" ||
+            packageName == "android" ||
+            packageName == "com.google.android.gms" ||
+            packageName == "com.google.android.gsf" ||
+            packageName == "com.android.setupwizard" ||
+            packageName == "com.google.android.setupwizard" ||
+            packageName == "com.google.android.apps.restore" ||
+            packageName.contains("permissioncontroller") ||
+            packageName.contains("packageinstaller")
+
+    private fun isLaunchablePackage(packageName: String): Boolean {
+        val intent = Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .setPackage(packageName)
+        return packageManager.queryIntentActivities(intent, 0).isNotEmpty()
     }
 
     private fun startWatchdog() {
@@ -555,13 +872,19 @@ class TaskBarOverlayService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             val topInset = statusBarInsetPx()
-            y = if (presentation == Presentation.COMPACT) {
-                // 细条完整放在状态栏下方，保证只有 18dp，高一点也不会抢走系统状态栏的触摸。
-                topInset + dp(1)
+            val compact = presentation == Presentation.COMPACT
+            val touchHeight = dp(if (compact) TOUCH_TARGET_HEIGHT_DP else FULL_TOUCH_TARGET_HEIGHT_DP)
+            val pillHeight = dp(if (compact) COMPACT_PILL_HEIGHT_DP else FULL_PILL_HEIGHT_DP)
+            val touchPadding = (touchHeight - pillHeight) / 2
+            val pillTop = if (compact) {
+                // 其他 App 内的细条保持贴状态栏，只用于展示和上滑关闭。
+                (topInset - dp(STATUS_BAR_OVERLAP_DP)).coerceAtLeast(dp(4))
             } else {
-                // 原胶囊允许轻微压住状态栏下沿；大部分区域仍可正常点击。
-                (topInset - dp(OVERLAY_UP_SHIFT_DP)).coerceAtLeast(dp(24))
+                // 桌面完整胶囊下移到状态栏下方，整块触摸区都能收到点击。
+                topInset + dp(FULL_PILL_TOP_GAP_DP)
             }
+            // 窗口高度包含透明触摸区，y 要往上扣掉这段 padding，视觉胶囊才会真正更高。
+            y = (pillTop - touchPadding).coerceAtLeast(0)
             title = "时纪流顶部任务条"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode =
@@ -580,8 +903,8 @@ class TaskBarOverlayService : Service() {
             root.addView(
                 buildCompactBar(state),
                 LinearLayout.LayoutParams(
-                    compactBarWidth(),
-                    dp(COMPACT_BAR_HEIGHT_DP),
+                    compactBarWidth() + dp(HORIZONTAL_TOUCH_PADDING_DP * 2),
+                    dp(TOUCH_TARGET_HEIGHT_DP),
                 ).apply { gravity = Gravity.CENTER_HORIZONTAL },
             )
             return root
@@ -589,8 +912,8 @@ class TaskBarOverlayService : Service() {
         root.addView(
             buildCollapsedBar(state),
             LinearLayout.LayoutParams(
-                collapsedBarWidth(),
-                dp(30),
+                collapsedBarWidth() + dp(HORIZONTAL_TOUCH_PADDING_DP * 2),
+                dp(FULL_TOUCH_TARGET_HEIGHT_DP),
             ).apply { gravity = Gravity.CENTER_HORIZONTAL },
         )
         if (expanded) {
@@ -608,8 +931,8 @@ class TaskBarOverlayService : Service() {
     private fun buildCollapsedBar(state: TaskBarNotificationCore.OverlayState?): View {
         val touch = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
-                collapsedBarWidth(),
-                dp(30),
+                collapsedBarWidth() + dp(HORIZONTAL_TOUCH_PADDING_DP * 2),
+                dp(FULL_TOUCH_TARGET_HEIGHT_DP),
             )
             isClickable = true
             contentDescription = if (expanded) "收起时纪流任务条" else "展开时纪流任务条"
@@ -641,7 +964,7 @@ class TaskBarOverlayService : Service() {
                     if (leftSwipe || upSwipe) {
                         TaskBarNotificationCore.setOverlayWanted(this, false)
                         stopSelf()
-                    } else if (abs(dx) < dp(10) && abs(dy) < dp(10)) {
+                    } else if (abs(dx) < dp(16) && abs(dy) < dp(16)) {
                         handleBarTap()
                     }
                     true
@@ -654,8 +977,8 @@ class TaskBarOverlayService : Service() {
         touch.addView(
             pill,
             FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
+                collapsedBarWidth(),
+                dp(FULL_PILL_HEIGHT_DP),
                 Gravity.CENTER,
             ),
         )
@@ -676,26 +999,22 @@ class TaskBarOverlayService : Service() {
         return touch
     }
 
-    /**
-     * 不开“使用情况访问”时的轻量形态：只显示三色比例和任务数。
-     *
-     * <p>它贴在状态栏下沿，不再展开成任务卡，也不显示长文字；点一下才恢复原胶囊。
-     */
+    /** 其他 App 内的轻量形态：只显示三色比例和任务数，不响应点击，仅保留上滑关闭。 */
     private fun buildCompactBar(state: TaskBarNotificationCore.OverlayState?): View {
         val touch = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
-                compactBarWidth(),
-                dp(COMPACT_BAR_HEIGHT_DP),
+                compactBarWidth() + dp(HORIZONTAL_TOUCH_PADDING_DP * 2),
+                dp(TOUCH_TARGET_HEIGHT_DP),
             )
-            isClickable = true
-            contentDescription = "时纪流三色任务概览"
+            isClickable = false
+            contentDescription = "时纪流三色任务概览，上滑可关闭"
         }
         val pill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(9), 0, dp(9), 0)
             background = rounded(0xD925262A.toInt(), 9f)
-            isClickable = true
+            isClickable = false
         }
 
         var downX = 0f
@@ -716,8 +1035,6 @@ class TaskBarOverlayService : Service() {
                     if (leftSwipe || upSwipe) {
                         TaskBarNotificationCore.setOverlayWanted(this, false)
                         stopSelf()
-                    } else if (abs(dx) < dp(10) && abs(dy) < dp(10)) {
-                        restoreFullCapsule()
                     }
                     true
                 }
@@ -729,8 +1046,8 @@ class TaskBarOverlayService : Service() {
         touch.addView(
             pill,
             FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(14),
+                compactBarWidth(),
+                dp(COMPACT_PILL_HEIGHT_DP),
                 Gravity.CENTER,
             ),
         )
@@ -744,20 +1061,6 @@ class TaskBarOverlayService : Service() {
             },
         )
         return touch
-    }
-
-    /**
-     * 细条点一下恢复原胶囊。
-     *
-     * <p>Android 14 起，普通应用拿不到其他进程的前台信息，桌面识别在很多 ROM 上只能退回
-     * 细条。因此这个手势不能依赖“下一次 watchdog 重新判断”，而要短暂覆盖自动判断结果。
-     */
-    private fun restoreFullCapsule() {
-        manualFullUntil = SystemClock.elapsedRealtime() + FULL_CAPSULE_OVERRIDE_MS
-        presentation = Presentation.FULL
-        expanded = false
-        mainHandler.removeCallbacks(autoRetractRunnable)
-        render()
     }
 
     private fun handleBarTap() {

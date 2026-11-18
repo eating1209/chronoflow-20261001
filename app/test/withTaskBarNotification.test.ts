@@ -66,6 +66,10 @@ describe('顶部任务小条 Manifest 注入', () => {
         'android.permission.SYSTEM_ALERT_WINDOW',
         'android.permission.FOREGROUND_SERVICE',
         'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
+        'android.permission.GET_TASKS',
+        'android.permission.PACKAGE_USAGE_STATS',
+        'android.permission.POST_NOTIFICATIONS',
+        'android.permission.RECEIVE_BOOT_COMPLETED',
       ]),
     );
 
@@ -93,5 +97,38 @@ describe('顶部任务小条 Manifest 注入', () => {
           item.$['android:name'] === 'com.chronoflow.frontend.TaskBarOverlayService',
       ),
     ).toHaveLength(1);
+  });
+
+  it('声明 HOME 查询，避免 Android 11+ 把桌面误判成其他应用', () => {
+    const manifest = injectTaskBarManifest({
+      application: [{}],
+      queries: [{ intent: [{ action: [{ $: { 'android:name': 'android.intent.action.VIEW' } }] }] }],
+    });
+    const queries = manifest.queries as Array<{
+      intent: Array<{
+        action: Array<{ $: Record<string, string> }>;
+        category?: Array<{ $: Record<string, string> }>;
+      }>;
+    }>;
+    expect(queries).toHaveLength(1);
+    expect(
+      queries[0].intent.some(
+        (intent) =>
+          intent.action.some(
+            (item) => item.$['android:name'] === 'android.intent.action.MAIN',
+          ) &&
+          intent.category?.some(
+            (item) => item.$['android:name'] === 'android.intent.category.HOME',
+          ),
+      ),
+    ).toBe(true);
+    expect(
+      queries[0].intent.some(
+        (intent) =>
+          intent.action.some(
+            (item) => item.$['android:name'] === 'android.intent.action.VIEW',
+          ),
+      ),
+    ).toBe(true);
   });
 });

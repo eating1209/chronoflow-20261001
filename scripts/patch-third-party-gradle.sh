@@ -52,6 +52,36 @@ print("✓ onnxruntime-react-native：已跳过 VersionNumber 分支（Gradle 9 
 PY
 fi
 
+# onnxruntime 的 `latest.integration` 是动态版本。Gradle 会去 Maven 查最新版，网络慢时
+# 会卡在 `:onnxruntime-react-native:extractLibs` 很久；更糟的是查到新版本后还要下载
+# 50MB+ AAR。1.31.0 已经在本机 Gradle 缓存里，钉死版本让构建可复现，也避免联网卡住。
+if [ -f "$ORT_GRADLE" ]; then
+  python3 - "$ORT_GRADLE" <<'PY'
+import re, sys, pathlib
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+marker = "[补丁] 固定 onnxruntime AAR 版本"
+if marker in text:
+    print("✓ onnxruntime-react-native：AAR 版本已固定")
+    sys.exit(0)
+pattern = re.compile(
+    r'(extractLibs\s+"com\.microsoft\.onnxruntime:onnxruntime-android):latest\.integration(@aar")'
+)
+patched, count = pattern.subn(r"\1:1.31.0\2", text)
+if count == 0:
+    sys.stderr.write("⚠ onnxruntime-react-native：没有找到 latest.integration，版本固定补丁跳过\n")
+    sys.exit(0)
+patched = patched.replace(
+    'extractLibs "com.microsoft.onnxruntime:onnxruntime-android:1.31.0@aar"',
+    '// [补丁] 固定 onnxruntime AAR 版本，避免动态版本联网卡住 extractLibs\n  extractLibs "com.microsoft.onnxruntime:onnxruntime-android:1.31.0@aar"',
+    1,
+)
+path.write_text(patched, encoding="utf-8")
+print("✓ onnxruntime-react-native：AAR 已固定到 1.31.0")
+PY
+fi
+
 # ------------------------------------------------- onnxruntime（16KB 页对齐）
 #
 # Android 15 起不少新机型的**页大小是 16KB**（模拟器也有 `ps16k` 镜像）。这类系统要求 APK 里

@@ -9,14 +9,12 @@ import {
   type ReactNode,
 } from 'react';
 import Constants from 'expo-constants';
-import { File, Paths } from 'expo-file-system';
-import { getContentUriAsync } from 'expo-file-system/legacy';
-import * as IntentLauncher from 'expo-intent-launcher';
 import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { userFacingError } from '../../../shared/errors';
 import { Card } from '../../../shared/ui';
 import { useAppTheme, useRuntime } from '../../../context/AppContext';
+import { downloadAndInstallApk } from '../apkInstaller';
 import {
   decideUpdate,
   forceReasonText,
@@ -139,38 +137,10 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
     setProgress(0);
     setError(null);
     try {
-      const target = new File(Paths.cache, `chronoflow-${pending.release.versionCode ?? 0}.apk`);
-      if (target.exists) {
-        // 上一次下了一半 / 下完没装：删掉重下，否则会报「目标已存在」
-        target.delete();
-      }
-      const task = File.createDownloadTask(url, target, {
-        onProgress: ({ bytesWritten, totalBytes }) => {
-          // totalBytes 为 -1 表示服务端没给 Content-Length：这时不显示假的进度
-          if (totalBytes > 0) {
-            setProgress(bytesWritten / totalBytes);
-          }
-        },
-      });
-      const file = await task.downloadAsync();
-      if (!file) {
-        // 文档里的 null 只出现在「任务被暂停」时；我们没实现暂停，真出现就当失败
-        throw new Error('安装包没有下载完成，请重试');
-      }
-
-      // 大小对账：配了 sizeBytes 就比一下，能挡住被截断 / 被网关替换的下载。
-      // （sha256 也由服务端下发，留给人工/运维核对，App 侧不额外引一个哈希库。）
-      const expected = pending.release.sizeBytes ?? 0;
-      if (expected > 0 && typeof file.size === 'number' && Math.abs(file.size - expected) > 1024) {
-        throw new Error(`安装包大小对不上（应为 ${expected} 字节，实际 ${file.size} 字节）`);
-      }
-
-      // Android 7+ 必须把这个文件包成 content:// 才能交给系统安装器
-      const contentUri = await getContentUriAsync(file.uri);
-      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-        data: contentUri,
-        type: 'application/vnd.android.package-archive',
-        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION：临时把读权限授给安装器
+      await downloadAndInstallApk(url, {
+        fileName: `chronoflow-${pending.release.versionCode ?? 0}.apk`,
+        expectedSizeBytes: pending.release.sizeBytes ?? 0,
+        onProgress: setProgress,
       });
       // 系统安装界面已经起来了：收起弹层，用户装完打开的就是新版本
       setPhase('idle');

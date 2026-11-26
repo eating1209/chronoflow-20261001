@@ -136,6 +136,67 @@ class PersonalModuleTest {
     }
 
     @Test
+    @DisplayName("单次日程可以勾完成、取消完成，状态随范围查询返回")
+    void singleEventCompletionRoundTrips() throws Exception {
+        String token = registerAccount("13800000246");
+        long eventId = postJson("/api/v1/events", token,
+                "{\"title\":\"提交材料\",\"at\":\"2026-10-05T18:00:00+08:00\","
+                        + "\"timezone\":\"Asia/Shanghai\"}")
+                .path("data").path("id").asLong();
+        putJson("/api/v1/reminders", token,
+                "{\"targetType\":\"EVENT\",\"targetId\":" + eventId
+                        + ",\"items\":[{\"minutesBefore\":15}]}");
+
+        JsonNode completed = postJson("/api/v1/events/" + eventId + "/complete", token,
+                "{\"completed\":true}").path("data");
+        assertThat(completed.path("done").asBoolean()).isTrue();
+        assertThat(completed.path("completedAt").isMissingNode()
+                || completed.path("completedAt").isNull()).isFalse();
+
+        JsonNode hit = rangeQuery(token, "2026-10-05T00:00:00+08:00", "2026-10-06T00:00:00+08:00");
+        assertThat(hit.path("data").get(0).path("done").asBoolean()).isTrue();
+        JsonNode scheduleAfterComplete = getJson(get("/api/v1/reminders/schedule")
+                .param("start", "2026-10-05T00:00:00+08:00")
+                .param("end", "2026-10-06T00:00:00+08:00")
+                .header("Authorization", "Bearer " + token));
+        assertThat(scheduleAfterComplete.path("data")).isEmpty();
+
+        JsonNode reopened = postJson("/api/v1/events/" + eventId + "/complete", token,
+                "{\"completed\":false}").path("data");
+        assertThat(reopened.path("done").asBoolean()).isFalse();
+        JsonNode after = rangeQuery(token, "2026-10-05T00:00:00+08:00", "2026-10-06T00:00:00+08:00");
+        assertThat(after.path("data").get(0).path("done").asBoolean()).isFalse();
+        JsonNode scheduleAfterReopen = getJson(get("/api/v1/reminders/schedule")
+                .param("start", "2026-10-05T00:00:00+08:00")
+                .param("end", "2026-10-06T00:00:00+08:00")
+                .header("Authorization", "Bearer " + token));
+        assertThat(scheduleAfterReopen.path("data")).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("重复日程只勾完成指定的一次，并要求 occurrenceDate")
+    void recurringEventCompletionIsPerOccurrence() throws Exception {
+        String token = registerAccount("13800000247");
+        long eventId = createWeeklyStandup(token);
+
+        postJson("/api/v1/events/" + eventId + "/complete", token,
+                "{\"completed\":true,\"occurrenceDate\":\"2026-10-07\"}");
+
+        JsonNode result = rangeQuery(token, "2026-10-05T00:00:00+08:00", "2026-10-10T00:00:00+08:00");
+        assertThat(result.path("data")).hasSize(3);
+        assertThat(result.path("data").get(0).path("done").asBoolean()).isFalse();
+        assertThat(result.path("data").get(1).path("done").asBoolean()).isTrue();
+        assertThat(result.path("data").get(2).path("done").asBoolean()).isFalse();
+
+        mockMvc.perform(post("/api/v1/events/" + eventId + "/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"completed\":true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(10002));
+    }
+
+    @Test
     @DisplayName("scope=THIS 只改某一次出现，其余实例保持原时间")
     void modifySingleOccurrenceKeepsOthersUntouched() throws Exception {
         String token = registerAccount("13800000204");
@@ -711,6 +772,37 @@ class PersonalModuleTest {
         // 详情接口读回来也应是空的
         JsonNode detail = getJson("/api/v1/tasks/" + taskId, token).path("data");
         assertThat(detail.path("dueAt").isMissingNode() || detail.path("dueAt").isNull()).isTrue();
+    }
+
+    @Test
+    @DisplayName("待办地点可保存、编辑与清空，坐标由服务端统一标记 GCJ-02")
+    void taskLocationRoundTrip() throws Exception {
+        String token = registerAccount("13800000248");
+        JsonNode created = postJson("/api/v1/tasks", token,
+                "{\"title\":\"交材料\",\"locationName\":\"行政楼\","
+                        + "\"locationAddress\":\"海大路 1 号\",\"locationDetail\":\"305 办公室\","
+                        + "\"latitude\":30.1234567,\"longitude\":122.1234567,\"poiId\":\"poi-1\"}")
+                .path("data");
+        long taskId = created.path("id").asLong();
+        assertThat(created.path("locationName").asText()).isEqualTo("行政楼");
+        assertThat(created.path("locationDetail").asText()).isEqualTo("305 办公室");
+        assertThat(created.path("coordinateSystem").asText()).isEqualTo("GCJ-02");
+
+        JsonNode edited = patchJson("/api/v1/tasks/" + taskId, token,
+                "{\"locationName\":\"图书馆\",\"locationDetail\":\"二楼服务台\","
+                        + "\"latitude\":30.2,\"longitude\":122.2}")
+                .path("data");
+        assertThat(edited.path("locationName").asText()).isEqualTo("图书馆");
+        assertThat(edited.path("locationDetail").asText()).isEqualTo("二楼服务台");
+
+        // PATCH 里空串表示显式清空整组地点；名称、坐标、POI 必须一起消失
+        JsonNode cleared = patchJson("/api/v1/tasks/" + taskId, token,
+                "{\"locationName\":\"\",\"locationAddress\":\"\",\"locationDetail\":\"\",\"poiId\":\"\"}")
+                .path("data");
+        assertThat(cleared.path("locationName").isMissingNode() || cleared.path("locationName").isNull()).isTrue();
+        assertThat(cleared.path("latitude").isMissingNode() || cleared.path("latitude").isNull()).isTrue();
+        assertThat(cleared.path("coordinateSystem").isMissingNode()
+                || cleared.path("coordinateSystem").isNull()).isTrue();
     }
 
     @Test

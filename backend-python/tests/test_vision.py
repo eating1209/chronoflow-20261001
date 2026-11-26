@@ -90,7 +90,7 @@ def test_unconfigured_model_reports_unavailable() -> None:
     assert "识别服务未配置" in failure.value.message
 
 
-# ------------------------------------------------ OCR 文字 → 日程草稿（第二段，parse-text）
+# ------------------------------------------------ OCR 文字 → 日程 / 待办草稿（第二段，parse-text）
 
 
 def test_parse_text_prompt_is_the_same_file_as_java() -> None:
@@ -103,6 +103,8 @@ def test_parse_text_prompt_is_the_same_file_as_java() -> None:
     assert "要你做的事" in prompt
     assert "没写就留空" in prompt
     assert "不要猜时刻" in prompt
+    assert "判断日程还是待办" in prompt
+    assert "`EVENT`" in prompt and "`TASK`" in prompt
 
 
 def test_parse_text_keeps_items_without_date() -> None:
@@ -113,8 +115,8 @@ def test_parse_text_keeps_items_without_date() -> None:
     好的，识别结果如下：
     ```json
     {"items":[
-      {"title":"离返校登记","at":"2026-09-24T00:00:00+08:00","timezone":"Asia/Shanghai"},
-      {"title":"填写返校情况统计表","timezone":"Asia/Shanghai","description":"金山文档填写"}
+      {"title":"离返校登记","kind":"TASK","at":"2026-09-24T00:00:00+08:00","timezone":"Asia/Shanghai"},
+      {"title":"填写返校情况统计表","kind":"TASK","timezone":"Asia/Shanghai","description":"金山文档填写"}
     ]}
     ```
     """
@@ -124,9 +126,25 @@ def test_parse_text_keeps_items_without_date() -> None:
     assert items[0].at == "2026-09-24T00:00:00+08:00"
     assert items[0].timezone == "Asia/Shanghai"
     assert items[1].at is None
-    # 只产出日程：没有 kind / confidence
-    assert "kind" not in items[0].to_dict()
+    assert items[0].kind == "TASK"
+    assert items[0].to_dict()["kind"] == "TASK"
     assert "confidence" not in items[0].to_dict()
+
+
+def test_parse_text_infers_kind_when_model_omits_it() -> None:
+    """旧模型 / 漏字段时也要有分类：动作词进待办，会议类有日期进日程。"""
+    from app.services import vision_text
+
+    reply = """
+    {"items":[
+      {"title":"交材料","at":"2026-09-24T00:00:00+08:00","timezone":"Asia/Shanghai"},
+      {"title":"项目评审会","at":"2026-09-25T15:00:00+08:00","timezone":"Asia/Shanghai"},
+      {"title":"整理资料","timezone":"Asia/Shanghai"}
+    ]}
+    """
+    items = vision_text.parse_items(reply, "Asia/Shanghai")
+
+    assert [item.kind for item in items] == ["TASK", "EVENT", "TASK"]
 
 
 def test_parse_text_tolerates_bad_reply() -> None:

@@ -1,8 +1,8 @@
 /**
- * 「拍照/相册 → 识别日程」的纯逻辑（spec §4.1.9）。
+ * 「拍照/相册 → 识别安排」的纯逻辑（spec §4.1.9）。
  *
  * 这条链路分三段：端侧 OCR（图片 → 文字，图片不出手机）→ 服务端解析
- * （`POST /ai/events/parse-text`，文字 → 日程草稿）→ **确认页**（用户补日期 / 改标题）→ 落库。
+ * （`POST /ai/events/parse-text`，文字 → 日程 / 待办草稿）→ **确认页**（用户核对）→ 落库。
  *
  * 服务端交给我们的草稿里，`at` 可能是空的（通知里根本没写日期），且时刻一律是
  * 「当天 00:00 / 或原文写明的时刻」。本文件只做两件不碰原生、可单测的事：
@@ -39,6 +39,8 @@ export function defaultTimeNote(time: string = DEFAULT_EVENT_TIME): string {
  */
 export interface RecognizedDraft {
   title: string;
+  /** 自动判断是日程还是待办；旧服务端没给时由 `inferDraftKind()` 兜底 */
+  kind: RecognizedDraftKind;
   /**
    * 时间点（带偏移量的 ISO）。null / undefined = 没写日期；
    * 落在当地 00:00 = 写了日期但**没写几点**（模型按提示词的约定这么输出），
@@ -50,6 +52,10 @@ export interface RecognizedDraft {
   locationName?: string | null;
   description?: string | null;
 }
+
+export type RecognizedDraftKind = 'EVENT' | 'TASK';
+
+type RecognizedDraftFields = Omit<RecognizedDraft, 'kind'>;
 
 /**
  * 把服务端 `parse-text` 的 items 归一成草稿。
@@ -69,6 +75,7 @@ export function draftsFromItems(items: ParsedEventItem[] | null | undefined): Re
     }
     drafts.push({
       title,
+      kind: inferDraftKind(item),
       at: normalizeTime(item.at ?? null),
       timezone: text(item.timezone),
       locationName: text(item.locationName),
@@ -78,13 +85,54 @@ export function draftsFromItems(items: ParsedEventItem[] | null | undefined): Re
   return drafts;
 }
 
+const TASK_HINTS = [
+  '登记', '报名', '提交', '上交', '交材料', '缴费', '付款', '填写', '填表',
+  '领取', '回复', '确认', '申请', '办理', '预约', '上传', '下载', '打卡',
+  '完成', '截止', '统计表', '问卷', 'deadline', 'register', 'submit',
+] as const;
+
+const EVENT_HINTS = [
+  '开会', '会议', '上课', '讲座', '考试', '面试', '大会', '活动', '聚餐',
+  '见面', '出发', '乘车', '航班', '高铁', '火车', '电影', '演出', '比赛',
+  'meeting', 'class', 'lecture', 'exam', 'interview',
+] as const;
+
+/**
+ * 判断一条识别结果是日程还是待办。
+ *
+ * <p>优先信服务端；旧服务端没返回 `kind` 时按事项动词兜底。**不能只看有没有时间**：
+ * 「9/24 前交材料」有时间，但核心是完成动作，应进待办。
+ */
+export function inferDraftKind(
+  item: Pick<ParsedEventItem, 'title' | 'at' | 'description'> & {
+    kind?: string | null;
+  },
+): RecognizedDraftKind {
+  const explicit = text(item.kind)?.toUpperCase();
+  if (explicit === 'EVENT' || explicit === 'TASK') {
+    return explicit;
+  }
+  const haystack = `${item.title} ${item.description ?? ''}`.toLocaleLowerCase();
+  if (TASK_HINTS.some((hint) => haystack.includes(hint))) {
+    return 'TASK';
+  }
+  if (EVENT_HINTS.some((hint) => haystack.includes(hint))) {
+    return 'EVENT';
+  }
+  // 没日期更像「待安排」；有明确时间且看不出动作性质时按日程。
+  return item.at ? 'EVENT' : 'TASK';
+}
+
 /**
  * 一条草稿落在哪一天（用它自己的时区解释）；**没日期就返回 null**。
  *
  * 返回 `YYYY-MM-DD` 而不是直接拿字符串前 10 位：`at` 带偏移量，
  * 换算到目标时区后可能落到前 / 后一天（服务端也会回带它认定「只说了哪天」的日期）。
  */
-export function draftDateKey(draft: RecognizedDraft, fallbackTimeZone = APP_TIMEZONE): string | null {
+export function draftDateKey(
+  draft: RecognizedDraftFields,
+  fallbackTimeZone = APP_TIMEZONE,
+): string | null {
   if (!draft.at) {
     return null;
   }
@@ -106,7 +154,7 @@ export function draftDateKey(draft: RecognizedDraft, fallbackTimeZone = APP_TIME
  *   用户可以保留、清掉，或在编辑页里换成地图选点；
  * - **日期**不在这里：它是 `draftDateKey()` 的产物，确认页与编辑器各自持有。
  */
-export function draftToEventDraft(draft: RecognizedDraft): EventDraft {
+export function draftToEventDraft(draft: RecognizedDraftFields): EventDraft {
   const zone = draft.timezone || APP_TIMEZONE;
   const base = emptyDraft();
   const time = recognizedTime(draft, zone);
@@ -132,7 +180,7 @@ export function draftToEventDraft(draft: RecognizedDraft): EventDraft {
  * <p>三种情况都算没识别出来：根本没给 `at`（连日期都没有，用户在确认页补日期）、
  * 给了但解析不了、以及当地 00:00（模型只在「只写了哪一天」时这么输出）。
  */
-function recognizedTime(draft: RecognizedDraft, zone: string): string | null {
+function recognizedTime(draft: Pick<RecognizedDraft, 'at'>, zone: string): string | null {
   const at = draft.at;
   if (!at || Number.isNaN(Date.parse(at))) {
     return null;

@@ -25,9 +25,10 @@ import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
- * 「OCR 文字 → 日程草稿」的云端解析（spec §4.1.9）。
+ * 「OCR 文字 → 日程 / 待办草稿」的云端解析（spec §4.1.9）。
  *
  * <p>为什么要分两段：手机端的端侧 OCR（PaddleOCR PP-OCRv4）**又准又不花钱、图片还不出手机**，
  * 而「理解一段通知里有几件事、哪句是‘要你去做的事’」是模型更擅长的事。手机上跑小模型试过
@@ -143,12 +144,43 @@ public class AgentTextParseService {
         Instant at = AgentTimes.parse(text(item, "at"), zone);
         return new ParsedEventDraft(
                 title.trim(),
+                parseKind(text(item, "kind"), title, at),
                 at == null ? null : OffsetDateTime.ofInstant(at, zone).toString(),
                 // 时区以服务端为准：模型偶尔会漏或写错，而 at 已经是按请求时区解析的，
                 // 回带别的时区只会让两者对不上。客户端靠这个时区把时间落到正确的那一天。
                 zone.getId(),
                 text(item, "locationName"),
                 text(item, "description"));
+    }
+
+    /** 模型给了就用；没给 / 写错时按事项动词兜底，保证 App 永远拿到 EVENT 或 TASK。 */
+    private static String parseKind(String value, String title, Instant at) {
+        String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        if (normalized.equals("EVENT") || normalized.equals("TASK")) {
+            return normalized;
+        }
+        String lower = title.toLowerCase(Locale.ROOT);
+        String[] taskHints = {
+                "登记", "报名", "提交", "上交", "交材料", "缴费", "付款", "填写", "填表",
+                "领取", "回复", "确认", "申请", "办理", "预约", "上传", "下载", "打卡",
+                "完成", "截止", "统计表", "问卷"
+        };
+        for (String hint : taskHints) {
+            if (lower.contains(hint)) {
+                return "TASK";
+            }
+        }
+        String[] eventHints = {
+                "开会", "会议", "上课", "讲座", "考试", "面试", "大会", "活动", "聚餐",
+                "见面", "出发", "乘车", "航班", "高铁", "火车", "电影", "演出", "比赛"
+        };
+        for (String hint : eventHints) {
+            if (lower.contains(hint)) {
+                return "EVENT";
+            }
+        }
+        // 没日期更像「待安排」；有明确时间且看不出动作性质时按日程。
+        return at == null ? "TASK" : "EVENT";
     }
 
     /** 抽第一个配平的 `{...}`：模型爱在前后加解释或 ```json 围栏。 */

@@ -81,6 +81,25 @@ class AccountService:
         self._session.commit()
         return prefs
 
+    def training_data_view(self, identity_id: int) -> dict:
+        from .training_data import opted_in_view
+
+        return opted_in_view(self._require_identity(identity_id))
+
+    def update_training_data(self, identity_id: int, enabled: bool) -> dict:
+        from .training_data import set_opted_in
+
+        identity = self._require_identity(identity_id)
+        view = set_opted_in(identity, enabled)
+        if not enabled:
+            # 关闭即删除，而不是“等 90 天后过期”：用户撤回同意后不应继续保留可供训练的数据
+            self._session.execute(
+                text("DELETE FROM training_sample WHERE identity_id = :identity_id"),
+                {"identity_id": identity_id},
+            )
+        self._session.commit()
+        return view
+
     def _require_identity(self, identity_id: int) -> Identity:
         identity = self._session.get(Identity, identity_id)
         if identity is None:
@@ -159,7 +178,15 @@ class AccountService:
         )
         # 7) 意见反馈（含正文与图片）
         self._session.execute(text("DELETE FROM feedback WHERE account_id = :account_id"), params)
-        # 8) 登录日志刻意不删：按《网络安全法》第二十一条要留存不少于 6 个月，
+        # 8) 训练样本：注销后不再具备训练用途的合法性，立即删除
+        self._session.execute(
+            text(
+                "DELETE FROM training_sample"
+                " WHERE identity_id IN (SELECT id FROM identity WHERE account_id = :account_id)"
+            ),
+            params,
+        )
+        # 9) 登录日志刻意不删：按《网络安全法》第二十一条要留存不少于 6 个月，
         #    且账号行会被匿名化，日志里也不含手机号。
 
         # 身份：停用 + 抹掉昵称 / 头像 / 通知偏好。
@@ -171,6 +198,8 @@ class AccountService:
             identity.nickname = self.DELETED_NICKNAME
             identity.avatar_url = None
             identity.notification_prefs = {}
+            identity.training_data_opt_in = False
+            identity.training_data_opted_in_at = None
 
         # 账号：手机号匿名化（原号因此可被重新注册），第三方绑定与密码一并清空
         account.phone = f"deleted-{account.id}"

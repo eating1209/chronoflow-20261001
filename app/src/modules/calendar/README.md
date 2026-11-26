@@ -34,4 +34,7 @@ calendar/
 - 提醒的排期、通知渠道和声音档位在 `modules/notifications`，不在本模块；本模块只负责选择结果与编辑页。
 - `editorSelection.ts` 用结构化的 `ReminderSoundChoice`，不要改成 import `notifications` 的`ReminderSound`，否则会形成纯层循环依赖。
 - 日期加减一律走 UTC；展示时显式传 `APP_TIMEZONE`，不要依赖设备时区。
+- 日程完成状态来自 `/events/{id}/complete`：非重复日程只有一条状态，重复日程按 `occurrenceDate` 只勾当次；不要把它做成 `event.status = CANCELLED`，取消日程和完成是两件事。
+- 勾选 / 取消完成日程后要调用 `refreshLocalReminders` 对齐本机排期；只改服务端状态会留下已经排好的通知。
+- 日历当天列表由 `agendaItemsForDay` 合并「日程 + 有截止时间的未取消待办」；没有时间的待办不进日历。待办当天勾完成后仍以灰色保留，跨天不再出现在别的日期。
 - `eventDraft` 是日程与待办的共享草稿能力：改字段时同时检查待办、识别确认页和组织日程的请求体映射。

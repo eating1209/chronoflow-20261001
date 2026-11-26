@@ -1,6 +1,16 @@
 import type { Priority } from '../../../shared/api';
 import type { Task } from '../../../shared/api';
-import { isValidDateKey, localDateKey, parseTime, toIso } from '../../calendar/pure';
+import {
+  DEFAULT_EVENT_TIME,
+  isDateOnlyPoint,
+  isValidDateKey,
+  localDateKey,
+  parseTime,
+  toIso,
+  type EditorSwitchSnapshot,
+  type EventPlace,
+  type ReminderSoundChoice,
+} from '../../calendar/pure';
 
 /**
  * 新建待办草稿。
@@ -11,11 +21,16 @@ import { isValidDateKey, localDateKey, parseTime, toIso } from '../../calendar/p
 export interface TaskDraft {
   title: string;
   description: string;
+  /** 结构化地点：有些待办是「去某处交材料」，地点和截止时间一样重要 */
+  place: EventPlace | null;
+  /** 详细地址：地图只到楼，教室 / 门牌由用户手填 */
+  locationDetail: string;
+  /** 兼容历史数据：编辑页已不再展示手动优先级，新建时保持普通 */
   priority: Priority;
   hasDue: boolean;
   dueDate: string;
   dueTime: string;
-  /** 关联的日程（spec §4.1.6）。标题一并留着，编辑页不必再查一次 */
+  /** 兼容历史数据：编辑页已移除关联日程入口，已有数据仍原样保留 */
   eventId: number | null;
   eventTitle: string | null;
   /**
@@ -27,17 +42,12 @@ export interface TaskDraft {
   reminders: number[];
 }
 
-export const TASK_PRIORITY_OPTIONS: { value: Priority; label: string }[] = [
-  { value: 'LOW', label: '低' },
-  { value: 'NORMAL', label: '普通' },
-  { value: 'HIGH', label: '重要' },
-  { value: 'URGENT', label: '紧急' },
-];
-
 export function emptyTaskDraft(todayKey: string): TaskDraft {
   return {
     title: '',
     description: '',
+    place: null,
+    locationDetail: '',
     priority: 'NORMAL',
     hasDue: false,
     dueDate: todayKey,
@@ -46,6 +56,106 @@ export function emptyTaskDraft(todayKey: string): TaskDraft {
     eventTitle: null,
     rrule: '',
     reminders: [],
+  };
+}
+
+/** 图片 / 语音识别交给待办编辑器的窄输入，字段与服务端 `ParsedEventItem` 对齐。 */
+export interface RecognizedTaskInput {
+  title: string;
+  at?: string | null;
+  timezone?: string | null;
+  locationName?: string | null;
+  description?: string | null;
+}
+
+/**
+ * 把一条识别结果铺成待办草稿。
+ *
+ * <p>没有日期是合法结果：`hasDue=false`，进入「待安排」。只有日期没有时刻时补 09:00，
+ * 并在备注里说明这是默认值，避免用户误以为原文写了 9 点。
+ */
+export function taskDraftFromRecognized(
+  input: RecognizedTaskInput,
+  todayKey: string,
+): TaskDraft {
+  const base = emptyTaskDraft(todayKey);
+  const title = input.title.trim();
+  const locationName = input.locationName?.trim() ?? '';
+  const originalDescription = input.description?.trim() ?? '';
+  let description = originalDescription;
+  let hasDue = false;
+  let dueDate = todayKey;
+  let dueTime = '09:00';
+
+  if (input.at && !Number.isNaN(Date.parse(input.at))) {
+    const zone = input.timezone?.trim() || TASK_TIMEZONE;
+    try {
+      dueDate = localDateKey(input.at, zone);
+      hasDue = true;
+      if (isDateOnlyPoint(input.at, zone)) {
+        description = ['未识别到具体时间，已默认填 09:00，请核对', originalDescription]
+          .filter(Boolean)
+          .join('\n');
+      } else {
+        dueTime = timeInZone(input.at, zone);
+      }
+    } catch {
+      // 时区或时间串异常时退回「待安排」，不把一条坏数据卡在确认页
+    }
+  }
+
+  return {
+    ...base,
+    title,
+    description,
+    place: locationName
+      ? { poiId: null, name: locationName, address: null, latitude: null, longitude: null }
+      : null,
+    hasDue,
+    dueDate,
+    dueTime,
+  };
+}
+
+/** 新建页切到「日程」时，把待办草稿整理成两边都能理解的快照。 */
+export function switchSnapshotFromTaskDraft(
+  draft: TaskDraft,
+  todayKey: string,
+  reminderSound: ReminderSoundChoice,
+): EditorSwitchSnapshot {
+  return {
+    title: draft.title,
+    description: draft.description,
+    priority: draft.priority,
+    rrule: draft.rrule,
+    reminders: draft.reminders,
+    reminderSound,
+    // 待办没设截止时间时切到日程：落在今天，时间用日程默认值
+    dateKey: draft.hasDue ? draft.dueDate : todayKey,
+    time: draft.hasDue ? draft.dueTime : DEFAULT_EVENT_TIME,
+    hasDue: draft.hasDue,
+    place: draft.place,
+    locationDetail: draft.locationDetail,
+    eventId: draft.eventId,
+    eventTitle: draft.eventTitle,
+  };
+}
+
+/** 从日程切到待办时恢复公共字段，并把原日程的发生时刻作为截止时刻。 */
+export function taskDraftFromSwitch(snapshot: EditorSwitchSnapshot): TaskDraft {
+  return {
+    title: snapshot.title,
+    description: snapshot.description,
+    place: snapshot.place,
+    locationDetail: snapshot.locationDetail,
+    priority: snapshot.priority,
+    hasDue: snapshot.hasDue,
+    dueDate: snapshot.dateKey,
+    dueTime: snapshot.time,
+    eventId: snapshot.eventId,
+    eventTitle: snapshot.eventTitle,
+    rrule: snapshot.rrule,
+    reminders: snapshot.reminders,
   };
 }
 
@@ -69,9 +179,16 @@ export function validateTaskDraft(draft: TaskDraft): TaskDraftValidation {
 
 export function buildCreateTaskPayload(draft: TaskDraft) {
   const description = draft.description.trim();
+  const locationDetail = draft.locationDetail.trim();
   return {
     title: draft.title.trim(),
     description: description ? description : null,
+    locationName: draft.place?.name ?? null,
+    locationAddress: draft.place?.address ?? null,
+    locationDetail: locationDetail ? locationDetail : null,
+    latitude: draft.place?.latitude ?? null,
+    longitude: draft.place?.longitude ?? null,
+    poiId: draft.place?.poiId ?? null,
     // 无截止时间的待办归入「待安排」，dueAt 送 null
     dueAt: draft.hasDue ? toIso(draft.dueDate, draft.dueTime) : null,
     priority: draft.priority,
@@ -89,6 +206,17 @@ export function draftFromTask(task: Task, todayKey: string): TaskDraft {
     return {
       title: task.title,
       description: task.description ?? '',
+      place:
+        task.locationName == null && task.latitude == null
+          ? null
+          : {
+              poiId: task.poiId ?? null,
+              name: task.locationName ?? '已选地点',
+              address: task.locationAddress ?? null,
+              latitude: task.latitude ?? null,
+              longitude: task.longitude ?? null,
+            },
+      locationDetail: task.locationDetail ?? '',
       priority: task.priority ?? 'NORMAL',
       hasDue: false,
       dueDate: todayKey,
@@ -105,6 +233,17 @@ export function draftFromTask(task: Task, todayKey: string): TaskDraft {
   return {
     title: task.title,
     description: task.description ?? '',
+    place:
+      task.locationName == null && task.latitude == null
+        ? null
+        : {
+            poiId: task.poiId ?? null,
+            name: task.locationName ?? '已选地点',
+            address: task.locationAddress ?? null,
+            latitude: task.latitude ?? null,
+            longitude: task.longitude ?? null,
+          },
+    locationDetail: task.locationDetail ?? '',
     priority: task.priority ?? 'NORMAL',
     hasDue: true,
     dueDate: localDateKey(task.dueAt, TASK_TIMEZONE),
@@ -122,6 +261,12 @@ export function buildUpdateTaskPayload(draft: TaskDraft) {
   return {
     title: base.title,
     description: base.description,
+    locationName: base.locationName ?? '',
+    locationAddress: base.locationAddress ?? '',
+    locationDetail: base.locationDetail ?? '',
+    latitude: base.latitude,
+    longitude: base.longitude,
+    poiId: base.poiId ?? '',
     priority: base.priority,
     dueAt: base.dueAt,
     clearDueAt: !draft.hasDue,
@@ -132,9 +277,9 @@ export function buildUpdateTaskPayload(draft: TaskDraft) {
   };
 }
 
-function timeInZone(iso: string): string {
+function timeInZone(iso: string, zone = TASK_TIMEZONE): string {
   return new Intl.DateTimeFormat('en-GB', {
-    timeZone: TASK_TIMEZONE,
+    timeZone: zone,
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,

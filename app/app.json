@@ -2,7 +2,7 @@
   "expo": {
     "name": "时纪流",
     "slug": "chronoflow",
-    "version": "1.1.0",
+    "version": "1.1.8",
     "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -18,20 +18,24 @@
     },
     "android": {
       "package": "com.chronoflow.frontend",
-      "versionCode": 19,
+      "versionCode": 33,
       "edgeToEdgeEnabled": true,
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
-        "REQUEST_INSTALL_PACKAGES"
+        "RECORD_AUDIO",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR",
+        "REQUEST_INSTALL_PACKAGES",
+        "SYSTEM_ALERT_WINDOW",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_SPECIAL_USE"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#21221D"
       },
       "blockedPermissions": [
-        "android.permission.RECORD_AUDIO",
-        "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.ACCESS_BACKGROUND_LOCATION",
         "android.permission.READ_PHONE_STATE",
@@ -59,9 +63,20 @@
           "channel": "default_developer"
         }
       ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "用于长按说话：把您说的一句话转成文字，再识别成日程草稿",
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      "./plugins/withPcmRecorder",
       "./plugins/withCleartextHttp",
       "./plugins/withOnnxRuntime",
       "./plugins/withSystemLocation",
+      "./plugins/withTaskBarNotification",
+      "./plugins/withShareImageImport",
       "./plugins/withReleaseSigning",
       "./plugins/with-ios-scene-delegate",
       [

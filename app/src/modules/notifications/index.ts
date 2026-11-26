@@ -18,6 +18,8 @@ export {
   useAppUpdate,
 } from './screens/AppUpdater';
 
+export { TestUpdateModal } from './screens/TestUpdateModal';
+
 export {
   decideUpdate,
   forceReasonText,
@@ -27,6 +29,18 @@ export {
   updateTitle,
   type UpdateDecision,
 } from './domain/appUpdate';
+
+export {
+  DEFAULT_TEST_UPDATE_URL,
+  normalizeTestUpdateUrl,
+} from './domain/testUpdate';
+
+export {
+  clearTestUpdateUrl,
+  installTestUpdate,
+  readTestUpdateUrl,
+  saveTestUpdateUrl,
+} from './testUpdate';
 
 export {
   persistReminderSettings,
@@ -58,9 +72,24 @@ export {
 export {
   routeFromNotificationData,
   routeFromResponse,
+  tapFromResponse,
   type NotificationResponseLike,
   type NotificationRoute,
+  type NotificationTap,
 } from './route';
+
+export {
+  actionKindFor,
+  actionsFor,
+  categoryIdFor,
+  COMPLETE_ACTION_ID,
+  DEFAULT_ACTION_IDENTIFIER,
+  REMINDER_CATEGORY_ID,
+  SNOOZE_ACTION_ID,
+  SNOOZE_MINUTES,
+  type NotificationActionKind,
+  type ReminderActionDefinition,
+} from './reminderActions';
 
 export { subscribeNotificationResponses } from './listener';
 

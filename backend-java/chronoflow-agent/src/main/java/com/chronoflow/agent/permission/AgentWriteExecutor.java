@@ -78,6 +78,7 @@ public class AgentWriteExecutor {
                 decimal(objectMapper, payload, "longitude"),
                 text(payload, "poiId"),
                 offset(payload, "at"),
+                integer(payload, "durationMinutes"),
                 text(payload, "timezone"),
                 null, null, null, null, null, null, null, null));
         return ok(event, "已创建日程");
@@ -95,6 +96,7 @@ public class AgentWriteExecutor {
                 decimal(objectMapper, payload, "longitude"),
                 text(payload, "poiId"),
                 offset(payload, "at"),
+                integer(payload, "durationMinutes"),
                 text(payload, "timezone"),
                 null, null, null, null, null, null, null, null,
                 EventScope.ALL, null);
@@ -152,6 +154,13 @@ public class AgentWriteExecutor {
     private static OffsetDateTime offset(JsonNode node, String field) {
         String raw = text(node, field);
         return raw == null ? null : OffsetDateTime.parse(raw);
+    }
+
+    private static Integer integer(JsonNode node, String field) {
+        if (node == null || !node.hasNonNull(field)) {
+            return null;
+        }
+        return node.path(field).asInt();
     }
 
     private static java.math.BigDecimal decimal(ObjectMapper mapper, JsonNode node, String field) {

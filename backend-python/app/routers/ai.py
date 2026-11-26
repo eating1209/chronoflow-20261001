@@ -1,4 +1,4 @@
-"""拍照 / 相册 → 日程草稿（spec §4.1.9）。刻意**不自动落库**：结果只作草稿，由用户确认。
+"""拍照 / 相册 → 日程 / 待办草稿（spec §4.1.9）。刻意**不自动落库**：结果只作草稿，由用户确认。
 
 模型会看错，直接写进日历比看错本身更糟——日历是用户唯一的事实来源。
 """
@@ -16,6 +16,7 @@ from ..deps import current_identity
 from ..errors import ApiError, ErrorCode, envelope
 from ..security import IdentityPrincipal
 from ..services import vision, vision_text
+from ..services import training_data
 from ..services.storage import ImageStorage
 
 router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
@@ -62,9 +63,10 @@ async def parse_text(
     payload: ParseTextIn | None = None,
     principal: IdentityPrincipal = Depends(current_identity),
 ) -> dict:
-    """OCR 文字 → 日程草稿（**图片不出手机**，这里只收文字）。
+    """OCR 文字 → 日程 / 待办草稿（**图片不出手机**，这里只收文字）。
 
-    返回 `items[]`，每条含 `title`、`at`（**可为空**：通知里没写日期）、`timezone`、`locationName?`、`description?`。
+    返回 `items[]`，每条含 `title`、`kind`（EVENT / TASK）、`at`（**可为空**：通知里没写日期）、
+    `timezone`、`locationName?`、`description?`。
     模型未配置或不可用返回 `90002`（与「图里确实没有要做的事」是两件事：后者返回空 `items`）。
     """
     timezone = (payload.timezone if payload and payload.timezone else VISION_TIMEZONE)
@@ -73,4 +75,13 @@ async def parse_text(
     # complete_json 走的是同步 urllib：扔进线程，别把事件循环按住
     items = await asyncio.to_thread(
         vision_text.parse, payload.text if payload else None, today, timezone)
-    return envelope({"items": [item.to_dict() for item in items]})
+    rendered = [item.to_dict() for item in items]
+    if rendered:
+        # 采样失败只在服务层记一条不含原文的告警，不影响本次解析结果
+        await asyncio.to_thread(
+            training_data.record_sample,
+            principal.identity_id,
+            payload.text if payload else None,
+            rendered,
+        )
+    return envelope({"items": rendered})

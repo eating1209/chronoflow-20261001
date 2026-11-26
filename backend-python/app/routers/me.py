@@ -31,6 +31,11 @@ class NotificationPrefsRequest(BaseModel):
     prefs: dict[str, bool]
 
 
+class TrainingDataRequest(BaseModel):
+    # 必填：缺字段不能被解释成“同意”
+    enabled: bool
+
+
 class SendEmailCodeRequest(BaseModel):
     email: str = Field(min_length=3, max_length=128)
 
@@ -242,6 +247,23 @@ def update_notifications(
     service: AccountService = Depends(get_account_service),
 ) -> dict:
     return envelope(service.update_notification_prefs(principal.identity_id, payload.prefs))
+
+
+@router.get("/training-data")
+def training_data(
+    principal: IdentityPrincipal = Depends(current_identity),
+    service: AccountService = Depends(get_account_service),
+) -> dict:
+    return envelope(service.training_data_view(principal.identity_id))
+
+
+@router.put("/training-data")
+def update_training_data(
+    payload: TrainingDataRequest,
+    principal: IdentityPrincipal = Depends(current_identity),
+    service: AccountService = Depends(get_account_service),
+) -> dict:
+    return envelope(service.update_training_data(principal.identity_id, payload.enabled))
 
 
 @router.post("/deletion")

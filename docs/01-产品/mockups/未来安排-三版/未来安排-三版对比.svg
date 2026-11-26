@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1280" viewBox="0 0 1680 1280">
+  <defs>
+    <style>
+      text { font-family: "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #1f1f1b; }
+    </style>
+  </defs>
+  <rect width="1680" height="1280" fill="#eee7db"/>
+  <text x="30" y="48" font-size="25" font-weight="700">A · 日期分组</text>
+  <text x="580" y="48" font-size="25" font-weight="700">B · 时间轴</text>
+  <text x="1130" y="48" font-size="25" font-weight="700">C · 月份分组</text>
+  <image href="未来安排-A-日期分组.png" x="30" y="72" width="520" height="1156" preserveAspectRatio="xMidYMid meet"/>
+  <image href="未来安排-B-时间轴.png" x="580" y="72" width="520" height="1156" preserveAspectRatio="xMidYMid meet"/>
+  <image href="未来安排-C-月份分组.png" x="1130" y="72" width="520" height="1156" preserveAspectRatio="xMidYMid meet"/>
+</svg>

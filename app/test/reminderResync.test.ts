@@ -42,6 +42,9 @@ function createFakeScheduler() {
     async cancel() {
       // 不需要
     },
+    async snooze() {
+      return { scheduled: 0, permissionDenied: false, failed: false };
+    },
   };
   return { scheduler, reconciled };
 }
@@ -143,11 +146,31 @@ describe('通知偏好', () => {
    * 存坏了也回到关闭——坏数据不该被解读成「用户同意了」。
    */
   it('没存过 / 存坏了都按「关闭」：没问过就不打扰', () => {
-    expect(parseNotificationPrefs(null)).toEqual({ enabled: false, sound: 'default' });
-    expect(parseNotificationPrefs('{')).toEqual({ enabled: false, sound: 'default' });
-    expect(parseNotificationPrefs('{"enabled":"no"}')).toEqual({ enabled: false, sound: 'default' });
-    expect(parseNotificationPrefs('{"enabled":true}')).toEqual({ enabled: true, sound: 'default' });
-    expect(parseNotificationPrefs('{"enabled":false}')).toEqual({ enabled: false, sound: 'default' });
+    expect(parseNotificationPrefs(null)).toEqual({
+      enabled: false,
+      taskBarEnabled: true,
+      sound: 'default',
+    });
+    expect(parseNotificationPrefs('{')).toEqual({
+      enabled: false,
+      taskBarEnabled: true,
+      sound: 'default',
+    });
+    expect(parseNotificationPrefs('{"enabled":"no"}')).toEqual({
+      enabled: false,
+      taskBarEnabled: true,
+      sound: 'default',
+    });
+    expect(parseNotificationPrefs('{"enabled":true}')).toEqual({
+      enabled: true,
+      taskBarEnabled: true,
+      sound: 'default',
+    });
+    expect(parseNotificationPrefs('{"enabled":false}')).toEqual({
+      enabled: false,
+      taskBarEnabled: true,
+      sound: 'default',
+    });
   });
 
   it('声音档位：老数据（只有 enabled）补默认，认不出的值也回默认而不是静音', () => {
@@ -160,8 +183,9 @@ describe('通知偏好', () => {
   it('内存实现与生产实现同一套读写语义', async () => {
     const store = createMemoryNotificationPrefsStore();
     expect((await store.read()).enabled).toBe(false);
-    await store.write({ enabled: true, sound: 'alarm' });
+    await store.write({ enabled: true, taskBarEnabled: false, sound: 'alarm' });
     expect((await store.read()).enabled).toBe(true);
+    expect((await store.read()).taskBarEnabled).toBe(false);
     expect((await store.read()).sound).toBe('alarm');
   });
 });

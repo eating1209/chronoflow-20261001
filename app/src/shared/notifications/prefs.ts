@@ -17,6 +17,13 @@ export interface NotificationPrefs {
   /** 到点提醒总开关（本地通知） */
   enabled: boolean;
   /**
+   * 任务栏 / 锁屏常驻任务总览。
+   *
+   * 和「到点提醒」分开：前者是一直看得见的总览，后者是到点才响的提醒。
+   * 默认开启，但真正发通知前仍会单独申请系统通知权限；用户拒绝时由调用方写回 false。
+   */
+  taskBarEnabled: boolean;
+  /**
    * 提醒声音档位（spec §4.5）。默认「系统提示音」：既然是用户主动开的提醒，
    * 默认就该听得见；想安静的可以自己切「静音」。
    */
@@ -25,6 +32,7 @@ export interface NotificationPrefs {
 
 export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   enabled: false,
+  taskBarEnabled: true,
   sound: DEFAULT_REMINDER_SOUND,
 };
 
@@ -39,10 +47,18 @@ export function parseNotificationPrefs(raw: string | null): NotificationPrefs {
     return { ...DEFAULT_NOTIFICATION_PREFS };
   }
   try {
-    const parsed = JSON.parse(raw) as { enabled?: unknown; sound?: unknown };
+    const parsed = JSON.parse(raw) as {
+      enabled?: unknown;
+      taskBarEnabled?: unknown;
+      sound?: unknown;
+    };
     return {
       enabled:
         typeof parsed.enabled === 'boolean' ? parsed.enabled : DEFAULT_NOTIFICATION_PREFS.enabled,
+      taskBarEnabled:
+        typeof parsed.taskBarEnabled === 'boolean'
+          ? parsed.taskBarEnabled
+          : DEFAULT_NOTIFICATION_PREFS.taskBarEnabled,
       // 老版本只存了 enabled，没有 sound：补默认值而不是丢掉整条记录
       sound: parseReminderSound(parsed.sound),
     };

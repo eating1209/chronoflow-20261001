@@ -144,7 +144,7 @@ public class ReminderService {
             for (EventOccurrence occurrence
                     : eventService.rangeQuery(identityId, null, rangeStart, rangeEnd)) {
                 List<Reminder> rows = eventReminders.get(occurrence.eventId());
-                if (rows == null) {
+                if (rows == null || occurrence.done()) {
                     continue;
                 }
                 entries.add(new ReminderScheduleEntry(
@@ -206,7 +206,7 @@ public class ReminderService {
                         task.getId(),
                         null,
                         task.getTitle(),
-                        null,
+                        task.getLocationName(),
                         task.getDueAt().toInstant(),
                         zones.getOrDefault(task.getCalendarId(), DEFAULT_TIMEZONE),
                         minutesOf(taskReminders.get(task.getId())),

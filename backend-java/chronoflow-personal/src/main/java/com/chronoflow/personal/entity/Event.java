@@ -86,6 +86,9 @@ public class Event {
 
     private OffsetDateTime at;
 
+    /** 日程时长（分钟）；为空表示旧数据 / 点状日程。 */
+    private Integer durationMinutes;
+
 
     private String timezone;
 
@@ -271,6 +274,14 @@ public class Event {
 
     public void setAt(OffsetDateTime at) {
         this.at = at;
+    }
+
+    public Integer getDurationMinutes() {
+        return durationMinutes;
+    }
+
+    public void setDurationMinutes(Integer durationMinutes) {
+        this.durationMinutes = durationMinutes;
     }
 
     public String getTimezone() {

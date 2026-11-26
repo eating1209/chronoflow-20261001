@@ -4,6 +4,8 @@ import com.chronoflow.auth.dto.AuthDtos.DeviceResponse;
 import com.chronoflow.auth.dto.AuthDtos.SendSmsCodeResponse;
 import com.chronoflow.auth.dto.AuthDtos.NotificationPrefsRequest;
 import com.chronoflow.auth.dto.AuthDtos.SetPasswordRequest;
+import com.chronoflow.auth.dto.AuthDtos.TrainingDataRequest;
+import com.chronoflow.auth.dto.AuthDtos.TrainingDataView;
 import com.chronoflow.auth.dto.AuthDtos.UpdateProfileRequest;
 import com.chronoflow.auth.dto.AccountSecurityDtos.AccountSecurityView;
 import com.chronoflow.auth.dto.AccountSecurityDtos.BindEmailRequest;
@@ -22,6 +24,7 @@ import com.chronoflow.auth.service.AccountSecurityService;
 import com.chronoflow.auth.service.AuthService;
 import com.chronoflow.auth.service.EmailCodeService;
 import com.chronoflow.auth.service.RealNameService;
+import com.chronoflow.auth.service.TrainingDataService;
 import com.chronoflow.auth.service.VerificationCodeService;
 import com.chronoflow.common.api.ApiResponse;
 import com.chronoflow.common.api.ErrorCode;
@@ -57,6 +60,7 @@ public class MeController {
     private final AccountSecurityService accountSecurity;
     private final EmailCodeService emailCodeService;
     private final RealNameService realNameService;
+    private final TrainingDataService trainingDataService;
     private final VerificationCodeService smsCodeService;
 
     public MeController(AuthService authService,
@@ -64,12 +68,14 @@ public class MeController {
                         AccountSecurityService accountSecurity,
                         EmailCodeService emailCodeService,
                         RealNameService realNameService,
+                        TrainingDataService trainingDataService,
                         VerificationCodeService smsCodeService) {
         this.authService = authService;
         this.accountService = accountService;
         this.accountSecurity = accountSecurity;
         this.emailCodeService = emailCodeService;
         this.realNameService = realNameService;
+        this.trainingDataService = trainingDataService;
         this.smsCodeService = smsCodeService;
     }
 
@@ -218,6 +224,19 @@ public class MeController {
             @Valid @RequestBody NotificationPrefsRequest request) {
         IdentityPrincipal principal = CurrentIdentity.require();
         return ApiResponse.ok(accountService.updateNotificationPrefs(principal.identityId(), request.prefs()));
+    }
+
+    /** 训练用途单独同意状态与保留期限（任务 5）；默认关闭。 */
+    @GetMapping("/training-data")
+    public ApiResponse<TrainingDataView> trainingData() {
+        return ApiResponse.ok(trainingDataService.view(CurrentIdentity.require().identityId()));
+    }
+
+    @PutMapping("/training-data")
+    public ApiResponse<TrainingDataView> updateTrainingData(
+            @Valid @RequestBody TrainingDataRequest request) {
+        return ApiResponse.ok(trainingDataService.setEnabled(
+                CurrentIdentity.require().identityId(), request.enabled()));
     }
 
     /**

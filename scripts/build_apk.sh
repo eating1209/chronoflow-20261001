@@ -260,6 +260,33 @@ echo
 echo "✅ $OUT"
 ls -lh "$OUT"
 
+# 通知卡布局由 expo prebuild 从 plugins/taskbar-native/res 复制。增量构建曾经出现
+# Kotlin 已引用新 ID、resources.arsc 却还是旧布局的情况，运行时会直接报
+# "No field taskbar_compact_legend of type I"。这里在出包后硬检查一次，宁可构建失败
+# 也不要把“通知和状态栏任务条都点不开”的包交出去。
+echo "→ 检查任务条通知资源是否完整"
+python3 - "$OUT" <<'PY'
+import sys, zipfile
+
+path = sys.argv[1]
+required = [
+    "taskbar_notification_collapsed",
+    "taskbar_compact_legend",
+    "taskbar_compact_task",
+    "taskbar_compact_title",
+    "taskbar_compact_when",
+    "taskbar_compact_circle",
+]
+with zipfile.ZipFile(path) as apk:
+    resources = apk.read("resources.arsc")
+missing = [name for name in required if name.encode("utf-8") not in resources]
+if missing:
+    sys.stderr.write("✗ APK 里缺少任务条资源：" + ", ".join(missing) + "\n")
+    sys.stderr.write("  用 bash scripts/build_apk.sh --prebuild ... 重新生成 android/ 后再出包。\n")
+    sys.exit(1)
+print("  任务条通知资源 ID 完整")
+PY
+
 # release 包顺手打印签名指纹：应用宝后台与 App 备案要填的就是这两个值。
 # 用 apksigner 而不是 keytool：AGP 只打 v2/v3 签名，`keytool -printcert -jarfile` 读不了，
 # 会静默输出空（2026-10-18 第一次出正式包时就是这样，指纹没打出来）。

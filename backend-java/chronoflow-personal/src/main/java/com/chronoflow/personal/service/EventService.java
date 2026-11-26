@@ -6,12 +6,16 @@ import com.chronoflow.common.api.ErrorCode;
 import com.chronoflow.common.exception.BizException;
 import com.chronoflow.personal.dto.EventOccurrence;
 import com.chronoflow.personal.dto.PersonalDtos.EventCreateRequest;
+import com.chronoflow.personal.dto.PersonalDtos.EventCompleteRequest;
+import com.chronoflow.personal.dto.PersonalDtos.EventCompletionResponse;
 import com.chronoflow.personal.dto.PersonalDtos.EventScope;
 import com.chronoflow.personal.dto.PersonalDtos.EventUpdateRequest;
 import com.chronoflow.personal.entity.Calendar;
 import com.chronoflow.personal.entity.Event;
+import com.chronoflow.personal.entity.EventCompletion;
 import com.chronoflow.personal.entity.EventException;
 import com.chronoflow.personal.entity.Task;
+import com.chronoflow.personal.mapper.EventCompletionMapper;
 import com.chronoflow.personal.mapper.EventExceptionMapper;
 import com.chronoflow.personal.mapper.EventMapper;
 import com.chronoflow.personal.mapper.SearchMapper;
@@ -45,6 +49,7 @@ public class EventService {
 
     private final EventMapper eventMapper;
     private final EventExceptionMapper eventExceptionMapper;
+    private final EventCompletionMapper eventCompletionMapper;
     private final CalendarService calendarService;
     private final RecurrenceExpander expander;
     private final TaskMapper taskMapper;
@@ -63,12 +68,14 @@ public class EventService {
 
     public EventService(EventMapper eventMapper,
                         EventExceptionMapper eventExceptionMapper,
+                        EventCompletionMapper eventCompletionMapper,
                         CalendarService calendarService,
                         RecurrenceExpander expander,
                         TaskMapper taskMapper,
                         SearchMapper searchMapper) {
         this.eventMapper = eventMapper;
         this.eventExceptionMapper = eventExceptionMapper;
+        this.eventCompletionMapper = eventCompletionMapper;
         this.calendarService = calendarService;
         this.expander = expander;
         this.taskMapper = taskMapper;
@@ -98,6 +105,7 @@ public class EventService {
         event.setPoiId(request.poiId());
         applyCoordinates(event, request.latitude(), request.longitude());
         event.setAt(request.at());
+        event.setDurationMinutes(validDuration(request.durationMinutes()));
         event.setTimezone(StringUtils.hasText(request.timezone()) ? request.timezone() : calendar.getTimezone());
         event.setRrule(request.rrule());
         event.setStatus(choice(request.status(), STATUSES, Event.STATUS_CONFIRMED, "日程状态"));
@@ -165,6 +173,53 @@ public class EventService {
         eventMapper.updateById(event);
     }
 
+    /**
+     * 勾选 / 取消勾选日程。
+     *
+     * <p>重复日程按 {@code occurrenceDate} 只改这一次；完成状态按身份保存，
+     * 因此同一个组织日程在每个人自己的列表里互不影响。
+     */
+    @Transactional
+    public EventCompletionResponse complete(Long identityId,
+                                            Long eventId,
+                                            EventCompleteRequest request) {
+        Event event = requireOwned(identityId, eventId);
+        boolean recurring = StringUtils.hasText(event.getRrule());
+        LocalDate occurrenceDate = request.occurrenceDate();
+        if (recurring && occurrenceDate == null) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "重复日程需要指定本次日期");
+        }
+        if (!recurring) {
+            // 非重复日程只有一个实例，忽略客户端误带的日期，避免同一件事存出多行状态
+            occurrenceDate = null;
+        }
+
+        EventCompletion completion = findCompletion(identityId, eventId, occurrenceDate);
+        boolean completed = Boolean.TRUE.equals(request.completed());
+        if (completed) {
+            OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+            if (completion == null) {
+                completion = new EventCompletion();
+                completion.setEventId(eventId);
+                completion.setIdentityId(identityId);
+                completion.setOccurrenceDate(occurrenceDate);
+                completion.setCompletedAt(now);
+                eventCompletionMapper.insert(completion);
+            } else {
+                completion.setCompletedAt(now);
+                eventCompletionMapper.updateById(completion);
+            }
+        } else if (completion != null) {
+            eventCompletionMapper.deleteById(completion.getId());
+        }
+
+        return new EventCompletionResponse(
+                eventId,
+                occurrenceDate,
+                completed,
+                completed ? completion.getCompletedAt() : null);
+    }
+
     // ------------------------------------------------------------------ 查询
 
     public Event get(Long identityId, Long eventId) {
@@ -219,7 +274,27 @@ public class EventService {
         }
         occurrences.sort(Comparator.comparing(EventOccurrence::at)
                 .thenComparing(EventOccurrence::eventId));
-        return occurrences;
+
+        Map<String, EventCompletion> completions = eventCompletionMapper.selectList(
+                        new LambdaQueryWrapper<EventCompletion>()
+                                .eq(EventCompletion::getIdentityId, identityId)
+                                .in(EventCompletion::getEventId,
+                                        events.stream().map(Event::getId).toList()))
+                .stream()
+                .collect(Collectors.toMap(
+                        item -> completionKey(item.getEventId(), item.getOccurrenceDate()),
+                        item -> item,
+                        (first, second) -> first));
+
+        return occurrences.stream()
+                .map(occurrence -> {
+                    EventCompletion completion = completions.get(
+                            completionKey(occurrence.eventId(), occurrence.occurrenceDate()));
+                    return occurrence.withCompletion(
+                            completion != null,
+                            completion == null ? null : completion.getCompletedAt());
+                })
+                .toList();
     }
 
     /**
@@ -251,14 +326,18 @@ public class EventService {
                 event.getId(),
                 event.getCalendarId(),
                 event.getTitle(),
+                event.getDescription(),
                 event.getLocationName(),
                 event.getLocationAddress(),
                 event.getLocationDetail(),
                 event.getAt().toInstant(),
+                event.getDurationMinutes(),
                 StringUtils.hasText(event.getTimezone()) ? event.getTimezone() : "Asia/Shanghai",
                 StringUtils.hasText(event.getRrule()),
                 null,
-                false);
+                false,
+                false,
+                null);
     }
 
     public Event requireOwned(Long identityId, Long eventId) {
@@ -268,6 +347,22 @@ public class EventService {
         }
         calendarService.requireOwned(identityId, event.getCalendarId());
         return event;
+    }
+
+    private EventCompletion findCompletion(Long identityId, Long eventId, LocalDate occurrenceDate) {
+        LambdaQueryWrapper<EventCompletion> query = new LambdaQueryWrapper<EventCompletion>()
+                .eq(EventCompletion::getIdentityId, identityId)
+                .eq(EventCompletion::getEventId, eventId);
+        if (occurrenceDate == null) {
+            query.isNull(EventCompletion::getOccurrenceDate);
+        } else {
+            query.eq(EventCompletion::getOccurrenceDate, occurrenceDate);
+        }
+        return eventCompletionMapper.selectOne(query);
+    }
+
+    private static String completionKey(Long eventId, LocalDate occurrenceDate) {
+        return eventId + ":" + (occurrenceDate == null ? "" : occurrenceDate);
     }
 
     // ------------------------------------------------------------- 内部实现
@@ -330,6 +425,9 @@ public class EventService {
         if (request.at() != null) {
             event.setAt(request.at());
         }
+        if (request.durationMinutes() != null) {
+            event.setDurationMinutes(validDuration(request.durationMinutes()));
+        }
         if (StringUtils.hasText(request.timezone())) {
             event.setTimezone(request.timezone());
         }
@@ -355,6 +453,16 @@ public class EventService {
 
     private static String blankToNull(String value) {
         return StringUtils.hasText(value) ? value : null;
+    }
+
+    private static Integer validDuration(Integer durationMinutes) {
+        if (durationMinutes == null) {
+            return null;
+        }
+        if (durationMinutes <= 0 || durationMinutes > 7 * 24 * 60) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "日程时长需在 1-10080 分钟之间");
+        }
+        return durationMinutes;
     }
 
     /**

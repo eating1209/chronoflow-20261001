@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, String, text
+from sqlalchemy import BigInteger, Boolean, DateTime, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -49,4 +49,6 @@ class Identity(Base):
     timezone: Mapped[str | None] = mapped_column(String(64))
     # 该列是 jsonb；用 JSONB 类型而不是 String，否则 psycopg 会按 varchar 发送而被数据库拒绝
     notification_prefs: Mapped[dict | None] = mapped_column(JSONB)
+    training_data_opt_in: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    training_data_opted_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(16), default="ACTIVE")

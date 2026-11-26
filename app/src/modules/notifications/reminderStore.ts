@@ -19,6 +19,18 @@ export function reminderTargetKey(targetType: ReminderTargetType, targetId: numb
   return `${targetType}:${targetId}`;
 }
 
+/** 「稍后提醒」单独记账：前台按服务端重排时不能把它当成过期通知撤掉。 */
+const SNOOZE_KEY_PREFIX = 'snooze:';
+
+export function snoozeTargetKey(targetType: ReminderTargetType, targetId: number): string {
+  return `${SNOOZE_KEY_PREFIX}${reminderTargetKey(targetType, targetId)}`;
+}
+
+/** `snooze:EVENT:12` → `EVENT:12`；不是稍后提醒的键返回 null。 */
+export function reminderTargetKeyFromSnooze(key: string): string | null {
+  return key.startsWith(SNOOZE_KEY_PREFIX) ? key.slice(SNOOZE_KEY_PREFIX.length) : null;
+}
+
 export interface ReminderIdStore {
   read: () => Promise<Record<string, string[]>>;
   write: (map: Record<string, string[]>) => Promise<void>;

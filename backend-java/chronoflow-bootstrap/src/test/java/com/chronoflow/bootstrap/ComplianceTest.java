@@ -150,6 +150,13 @@ class ComplianceTest {
                 .path("data").path("id").asLong();
         postJsonWithBearer("/api/v1/tasks", accessToken,
                 "{\"title\":\"要消失的待办\",\"eventId\":" + eventId + "}");
+        // 训练样本也属于该账号的数据：注销后必须一起清掉
+        jdbcTemplate.update(
+                "INSERT INTO training_sample"
+                        + " (identity_id, source, redacted_text, parsed_json, expires_at)"
+                        + " VALUES (?, 'VISION_TEXT', '联系人：[姓名]', '[]'::jsonb,"
+                        + " now() + interval '90 days')",
+                identityId);
 
         // 组织账号：管理员先导入成员，再用个人身份认领 —— 注销后这条绑定必须被解除
         seedOrgWithUnclaimedMember("XAOFF301", "S3001");
@@ -215,6 +222,9 @@ class ComplianceTest {
                 .isZero();
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT count(*) FROM calendar WHERE owner_identity_id = ?", Integer.class, identityId))
+                .isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM training_sample WHERE identity_id = ?", Integer.class, identityId))
                 .isZero();
 
         // 5) 组织侧成员记录保留，但认领关系被解除（成员可重新认领）

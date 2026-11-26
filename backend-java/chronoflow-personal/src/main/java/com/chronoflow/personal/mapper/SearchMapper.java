@@ -48,7 +48,9 @@ public interface SearchMapper {
             WHERE t.owner_identity_id = #{identityId}
               AND t.deleted_at IS NULL
               AND (t.title ILIKE #{pattern} ESCAPE '\\'
-                   OR t.description ILIKE #{pattern} ESCAPE '\\')
+                   OR t.description ILIKE #{pattern} ESCAPE '\\'
+                   OR t.location_name ILIKE #{pattern} ESCAPE '\\'
+                   OR t.location_detail ILIKE #{pattern} ESCAPE '\\')
             ORDER BY t.due_at DESC NULLS LAST
             LIMIT #{limit}
             """)

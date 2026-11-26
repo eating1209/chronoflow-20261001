@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.chronoflow.common.persistence.JsonbStringTypeHandler;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 
 /**
@@ -42,6 +43,30 @@ public class Task {
     private String title;
 
     private String description;
+
+    // ---------------------------------------------------------------- 地点
+    // 与 event 的地点字段保持同一套结构：待办也可能要去某个教室 / 办公室交材料。
+    // 全部用 ALWAYS：清空地点时必须真的把 null 写回，否则用户会看到「清了又回来」。
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String locationName;
+
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String locationAddress;
+
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String locationDetail;
+
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal latitude;
+
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal longitude;
+
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String poiId;
+
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String coordinateSystem;
 
     /**
      * 截断更新必须能写入 null：MyBatis-Plus 的 updateById 默认忽略 null 字段，
@@ -134,6 +159,62 @@ public class Task {
 
     public void setDescription(String description) {
         this.description = description;
+    }
+
+    public String getLocationName() {
+        return locationName;
+    }
+
+    public void setLocationName(String locationName) {
+        this.locationName = locationName;
+    }
+
+    public String getLocationAddress() {
+        return locationAddress;
+    }
+
+    public void setLocationAddress(String locationAddress) {
+        this.locationAddress = locationAddress;
+    }
+
+    public String getLocationDetail() {
+        return locationDetail;
+    }
+
+    public void setLocationDetail(String locationDetail) {
+        this.locationDetail = locationDetail;
+    }
+
+    public BigDecimal getLatitude() {
+        return latitude;
+    }
+
+    public void setLatitude(BigDecimal latitude) {
+        this.latitude = latitude;
+    }
+
+    public BigDecimal getLongitude() {
+        return longitude;
+    }
+
+    public void setLongitude(BigDecimal longitude) {
+        this.longitude = longitude;
+    }
+
+    public String getPoiId() {
+        return poiId;
+    }
+
+    public void setPoiId(String poiId) {
+        this.poiId = poiId;
+    }
+
+    public String getCoordinateSystem() {
+        return coordinateSystem;
+    }
+
+    public void setCoordinateSystem(String coordinateSystem) {
+        this.coordinateSystem = coordinateSystem;
     }
 
     public OffsetDateTime getDueAt() {

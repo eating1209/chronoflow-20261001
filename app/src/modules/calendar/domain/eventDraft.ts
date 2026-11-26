@@ -1,6 +1,7 @@
 import type { EventAvailability, EventDetail, EventStatus, Priority } from '../../../shared/api';
 import { localDateKey } from './agenda';
 import { APP_UTC_OFFSET } from './calendar';
+import type { EditorSwitchSnapshot, ReminderSoundChoice } from './editorSelection';
 
 /** 已选地点。坐标可空——手工输入的地点只有名字。 */
 export interface EventPlace {
@@ -18,8 +19,10 @@ export interface EventPlace {
  */
 export interface EventDraft {
   title: string;
-  /** 日程的唯一时间（HH:mm）。要「就这一天」就把时间拨到 00:00 */
+  /** 开始时间（HH:mm）。 */
   time: string;
+  /** 结束时间（HH:mm）。必须晚于开始时间。 */
+  endTime: string;
   place: EventPlace | null;
   /** 详细地址：地图只到「教学楼」，教室号由用户手填（与地点都可空，spec §5.9） */
   locationDetail: string;
@@ -43,6 +46,7 @@ export interface EventDraft {
 }
 
 export const DEFAULT_EVENT_TIME = '09:00';
+export const DEFAULT_EVENT_END_TIME = '10:00';
 
 export const PRIORITY_OPTIONS: { value: Priority; label: string }[] = [
   { value: 'LOW', label: '低' },
@@ -65,6 +69,7 @@ export function emptyDraft(): EventDraft {
   return {
     title: '',
     time: DEFAULT_EVENT_TIME,
+    endTime: DEFAULT_EVENT_END_TIME,
     place: null,
     locationDetail: '',
     description: '',
@@ -76,6 +81,47 @@ export function emptyDraft(): EventDraft {
     travelTimeMinutes: '',
     rrule: '',
     reminders: [],
+  };
+}
+
+/** 新建页切到「待办」时，把日程草稿整理成两边都能理解的快照。 */
+export function switchSnapshotFromEventDraft(
+  draft: EventDraft,
+  dateKey: string,
+  reminderSound: ReminderSoundChoice,
+): EditorSwitchSnapshot {
+  return {
+    title: draft.title,
+    description: draft.description,
+    priority: draft.priority,
+    rrule: draft.rrule,
+    reminders: draft.reminders,
+    reminderSound,
+    dateKey,
+    time: draft.time,
+    endTime: draft.endTime,
+    // 日程一定有发生时刻，切到待办后默认把它当作截止时刻
+    hasDue: true,
+    place: draft.place,
+    locationDetail: draft.locationDetail,
+    eventId: null,
+    eventTitle: null,
+  };
+}
+
+/** 从待办切回日程时恢复公共字段；待办没有的字段使用日程默认值。 */
+export function eventDraftFromSwitch(snapshot: EditorSwitchSnapshot): EventDraft {
+  return {
+    ...emptyDraft(),
+    title: snapshot.title,
+    time: snapshot.time,
+    endTime: snapshot.endTime ?? addMinutes(snapshot.time, 60),
+    place: snapshot.place,
+    locationDetail: snapshot.locationDetail,
+    description: snapshot.description,
+    priority: snapshot.priority,
+    rrule: snapshot.rrule,
+    reminders: snapshot.reminders,
   };
 }
 
@@ -91,6 +137,27 @@ export function parseTime(value: string): { hour: number; minute: number } | nul
     return null;
   }
   return { hour, minute };
+}
+
+/** 在 HH:mm 上增加分钟，跨到第二天时只保留当天的 HH:mm。 */
+export function addMinutes(value: string, minutes: number): string {
+  const parsed = parseTime(value);
+  if (!parsed) {
+    return DEFAULT_EVENT_END_TIME;
+  }
+  const total = (parsed.hour * 60 + parsed.minute + minutes) % (24 * 60);
+  return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
+}
+
+/** 同一天内两个 HH:mm 的分钟差；结束不晚于开始时返回 0。 */
+export function durationBetween(start: string, end: string): number {
+  const from = parseTime(start);
+  const to = parseTime(end);
+  if (!from || !to) {
+    return 0;
+  }
+  const minutes = (to.hour * 60 + to.minute) - (from.hour * 60 + from.minute);
+  return minutes > 0 ? minutes : 0;
 }
 
 /** 出行时间：空串表示不设置，其余必须是 0-1440 的整数分钟。 */
@@ -125,7 +192,7 @@ export function toIso(dateKey: string, time: string): string {
 export type DraftValidation = { ok: true } | { ok: false; message: string };
 
 /**
- * 校验草稿。标题必填，时刻要写成 HH:mm（拨到 00:00 就是「就这一天」）。
+ * 校验草稿。标题必填，开始和结束时间都要写成 HH:mm，且结束必须晚于开始。
  */
 export function validateDraft(draft: EventDraft): DraftValidation {
   if (!draft.title.trim()) {
@@ -142,13 +209,20 @@ export function validateDraft(draft: EventDraft): DraftValidation {
   if (!parseTime(draft.time)) {
     return { ok: false, message: '时间格式应为 HH:mm' };
   }
+  if (!parseTime(draft.endTime)) {
+    return { ok: false, message: '结束时间格式应为 HH:mm' };
+  }
+  if (durationBetween(draft.time, draft.endTime) <= 0) {
+    return { ok: false, message: '结束时间要晚于开始时间' };
+  }
   return { ok: true };
 }
 
 /**
  * 组装创建日程的请求体。
  *
- * 日程只有一个时间点 `at`（spec §4.1.2）；把时间拨到 00:00 就是「就这一天」。
+ * 日程用 `at` 表示开始时间，`durationMinutes` 表示持续多久；
+ * App 用这两个值显示「开始–结束」。旧服务端没有 durationMinutes 时仍可创建点状日程。
  * 空的文本字段统一送 null：后端用 null 表示「未设置」，空串会被当成有效值存进去。
  */
 export function buildCreatePayload(dateKey: string, draft: EventDraft) {
@@ -157,6 +231,7 @@ export function buildCreatePayload(dateKey: string, draft: EventDraft) {
   return {
     title: draft.title.trim(),
     at: toIso(dateKey, draft.time),
+    durationMinutes: durationBetween(draft.time, draft.endTime) || null,
     description: blankToNull(draft.description),
     locationName: draft.place?.name ?? null,
     locationAddress: draft.place?.address ?? null,
@@ -183,6 +258,10 @@ export function draftFromEvent(event: EventDetail): EventDraft {
   return {
     title: event.title,
     time: timeInZone(event.at, zone),
+    endTime: addMinutes(
+      timeInZone(event.at, zone),
+      event.durationMinutes && event.durationMinutes > 0 ? event.durationMinutes : 60,
+    ),
     locationDetail: event.locationDetail ?? '',
     /**
      * 判断「有没有地点」必须用 `== null`（同时覆盖 null 与 undefined）：

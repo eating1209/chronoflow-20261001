@@ -178,6 +178,8 @@ public class AccountService {
             identity.setNickname(DELETED_NICKNAME);
             identity.setAvatarUrl(null);
             identity.setNotificationPrefs("{}");
+            identity.setTrainingDataOptIn(false);
+            identity.setTrainingDataOptedInAt(null);
             identityMapper.updateById(identity);
         }
 

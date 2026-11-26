@@ -36,9 +36,13 @@ describe('新建日程草稿', () => {
     expect(validateDraft({ ...emptyDraft(), title: '开会' })).toEqual({ ok: true });
   });
 
-  it('validateDraft 只校验一个时间，格式不对才报错', () => {
-    expect(validateDraft({ ...emptyDraft(), title: '开会', time: '10:00' })).toEqual({ ok: true });
+  it('validateDraft 校验开始与结束时间，结束必须晚于开始', () => {
+    expect(validateDraft({ ...emptyDraft(), title: '开会', time: '10:00', endTime: '11:00' })).toEqual({ ok: true });
     expect(validateDraft({ ...emptyDraft(), title: '开会', time: '乱写' }).ok).toBe(false);
+    expect(validateDraft({ ...emptyDraft(), title: '开会', time: '10:00', endTime: '10:00' })).toEqual({
+      ok: false,
+      message: '结束时间要晚于开始时间',
+    });
   });
 
   it('validateDraft 一律校验时刻（没有「全天」这个开关了）', () => {
@@ -46,10 +50,18 @@ describe('新建日程草稿', () => {
   });
 
   it('buildCreatePayload 定时日程落在同一天', () => {
-    expect(buildCreatePayload('2026-10-05', { ...emptyDraft(), title: ' 评审 ', time: '14:00' }))
+    expect(
+      buildCreatePayload('2026-10-05', {
+        ...emptyDraft(),
+        title: ' 评审 ',
+        time: '14:00',
+        endTime: '15:00',
+      }),
+    )
       .toEqual({
         title: '评审',
         at: '2026-10-05T14:00:00+08:00',
+        durationMinutes: 60,
         description: null,
         locationName: null,
         locationAddress: null,
@@ -68,7 +80,12 @@ describe('新建日程草稿', () => {
   });
 
   it('时间拨到 00:00 就是「就这一天」（日程只有一个时间）', () => {
-    const payload = buildCreatePayload('2026-10-05', { ...emptyDraft(), title: '团建', time: '00:00' });
+    const payload = buildCreatePayload('2026-10-05', {
+      ...emptyDraft(),
+      title: '团建',
+      time: '00:00',
+      endTime: '01:00',
+    });
     expect(payload.at).toBe('2026-10-05T00:00:00+08:00');
   });
 

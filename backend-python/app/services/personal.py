@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -63,6 +63,7 @@ def _event_columns(payload, defaults):
         # 详细地址：地图定位不到的那一层（教室 / 门牌）由用户手填，与地点相互独立（spec §5.9）
         "location_detail": _blank_to_none(payload.get("locationDetail")),
         "poi_id": _blank_to_none(payload.get("poiId")),
+        "duration_minutes": payload.get("durationMinutes"),
         "category": _blank_to_none(payload.get("category")),
         "url": _blank_to_none(payload.get("url")),
         "color": _blank_to_none(payload.get("color")),
@@ -245,12 +246,27 @@ class PersonalService:
         ).mappings():
             exceptions.setdefault(row["event_id"], []).append(dict(row))
 
+        completions = {
+            (row["event_id"], row["occurrence_date"]): dict(row)
+            for row in self._session.execute(
+                text(
+                    "SELECT * FROM event_completion"
+                    " WHERE identity_id = :identity AND event_id = ANY(:ids)"
+                ),
+                {"identity": identity_id, "ids": event_ids},
+            ).mappings()
+        }
+
         results: list[dict] = []
         for event in events:
             results.extend(
                 recurrence.expand(dict(event), exceptions.get(event["id"], []), start, end)
             )
         results.sort(key=lambda item: (item["at"], item["eventId"]))
+        for item in results:
+            completion = completions.get((item["eventId"], item["occurrenceDate"]))
+            item["done"] = completion is not None
+            item["completedAt"] = completion["completed_at"] if completion else None
         return results
 
     def list_all_events(self, identity_id: int, keyword: str | None, limit: int | None) -> list[dict]:
@@ -288,15 +304,19 @@ class PersonalService:
                 "eventId": row["id"],
                 "calendarId": row["calendar_id"],
                 "title": row["title"],
+                "description": row["description"],
                 "locationName": row["location_name"],
                 "locationDetail": row["location_detail"],
                 "locationAddress": row["location_address"],
                 "at": row["at"],
+                "durationMinutes": row["duration_minutes"],
                 "timezone": row["timezone"] or DEFAULT_TIMEZONE,
                 # 一条重复序列只出现一次：它不是「某一次出现」
                 "recurring": bool(row["rrule"]),
                 "occurrenceDate": None,
                 "modified": False,
+                "done": False,
+                "completedAt": None,
             }
             for row in rows
         ]
@@ -320,13 +340,14 @@ class PersonalService:
                 " description, location_name, location_address, location_detail,"
                 " latitude, longitude, poi_id,"
                 " coordinate_system, at, timezone, rrule, status,"
-                " availability, color, priority, category, url, travel_time_minutes,"
+                " availability, color, priority, category, url, travel_time_minutes, duration_minutes,"
                 " updated_after_dispatch)"
                 " VALUES (:calendar_id, :identity, 'PERSONAL', :title, :description, :location_name,"
                 " :location_address, :location_detail, :latitude, :longitude, :poi_id,"
                 " :coordinate_system,"
                 " :at, :timezone, :rrule, :status,"
-                " :availability, :color, :priority, :category, :url, :travel_time_minutes, false)"
+                " :availability, :color, :priority, :category, :url, :travel_time_minutes,"
+                " :duration_minutes, false)"
                 " RETURNING *"
             ),
             {
@@ -375,6 +396,7 @@ class PersonalService:
                     " category = COALESCE(:category, category),"
                     " url = COALESCE(:url, url),"
                     " travel_time_minutes = COALESCE(:travel_time_minutes, travel_time_minutes),"
+                    " duration_minutes = COALESCE(:duration_minutes, duration_minutes),"
                     " updated_at = now()"
                     " WHERE id = :id RETURNING *"
                 ),
@@ -435,6 +457,71 @@ class PersonalService:
             )
         self._session.commit()
 
+    def complete_event(
+        self,
+        identity_id: int,
+        event_id: int,
+        completed: bool,
+        occurrence_date: date | None,
+    ) -> dict:
+        """勾选 / 取消勾选日程。
+
+        重复日程按 occurrence_date 只改这一次；非重复日程只有一行状态（日期为 NULL）。
+        完成标记带 identity_id，所以组织日程在每个人自己的列表里互不影响。
+        """
+        event = self.require_event(identity_id, event_id)
+        if event["rrule"] and occurrence_date is None:
+            raise ApiError(ErrorCode.PARAM_INVALID, "重复日程需要指定本次日期")
+        if not event["rrule"]:
+            occurrence_date = None
+
+        current = self._session.execute(
+            text(
+                "SELECT * FROM event_completion"
+                " WHERE event_id = :event AND identity_id = :identity"
+                " AND occurrence_date IS NOT DISTINCT FROM :occurrence"
+            ),
+            {"event": event_id, "identity": identity_id, "occurrence": occurrence_date},
+        ).mappings().first()
+
+        if completed:
+            if current is None:
+                row = self._session.execute(
+                    text(
+                        "INSERT INTO event_completion"
+                        " (event_id, identity_id, occurrence_date, completed_at)"
+                        " VALUES (:event, :identity, :occurrence, now())"
+                        " RETURNING *"
+                    ),
+                    {
+                        "event": event_id,
+                        "identity": identity_id,
+                        "occurrence": occurrence_date,
+                    },
+                ).mappings().one()
+            else:
+                row = self._session.execute(
+                    text(
+                        "UPDATE event_completion SET completed_at = now()"
+                        " WHERE id = :id RETURNING *"
+                    ),
+                    {"id": current["id"]},
+                ).mappings().one()
+        else:
+            row = None
+            if current is not None:
+                self._session.execute(
+                    text("DELETE FROM event_completion WHERE id = :id"), {"id": current["id"]}
+                )
+
+        self._session.commit()
+        return {
+            "eventId": event_id,
+            "occurrenceDate": occurrence_date,
+            "done": completed,
+            "completedAt": row["completed_at"] if row else None,
+        }
+
     def _split_future(self, identity_id: int, event: dict, occurrence_date, payload: dict) -> dict:
         start = recurrence.occurrence_start(event, occurrence_date)
         row = self._session.execute(
@@ -443,13 +530,14 @@ class PersonalService:
                 " description, location_name, location_address, location_detail,"
                 " latitude, longitude, poi_id,"
                 " coordinate_system, at, timezone, rrule, status,"
-                " availability, color, priority, category, url, travel_time_minutes,"
+                " availability, color, priority, category, url, travel_time_minutes, duration_minutes,"
                 " updated_after_dispatch)"
                 " VALUES (:calendar_id, :identity, 'PERSONAL', :title, :description, :location_name,"
                 " :location_address, :location_detail, :latitude, :longitude, :poi_id,"
                 " :coordinate_system,"
                 " :at, :timezone, :rrule, :status,"
-                " :availability, :color, :priority, :category, :url, :travel_time_minutes, false)"
+                " :availability, :color, :priority, :category, :url, :travel_time_minutes,"
+                " :duration_minutes, false)"
                 " RETURNING *"
             ),
             {
@@ -472,6 +560,7 @@ class PersonalService:
                 "category": _coalesce(payload.get("category"), event["category"]),
                 "url": _coalesce(payload.get("url"), event["url"]),
                 "travel_time_minutes": _coalesce(payload.get("travelTimeMinutes"), event["travel_time_minutes"]),
+                "duration_minutes": _coalesce(payload.get("durationMinutes"), event["duration_minutes"]),
                 "at": payload.get("at") or start,
                 "timezone": payload.get("timezone") or event["timezone"],
                 "rrule": payload.get("rrule") or event["rrule"],
@@ -579,9 +668,13 @@ class PersonalService:
         row = self._session.execute(
             text(
                 "INSERT INTO task (calendar_id, owner_identity_id, parent_task_id, title,"
-                " description, event_id, due_at, status, priority, rrule, images, sort_order)"
-                " VALUES (:calendar_id, :identity, :parent_id, :title, :description, :event_id,"
-                " :due_at, 'TODO', :priority, :rrule, CAST(:images AS jsonb), 0)"
+                " description, location_name, location_address, location_detail,"
+                " latitude, longitude, poi_id, coordinate_system,"
+                " event_id, due_at, status, priority, rrule, images, sort_order)"
+                " VALUES (:calendar_id, :identity, :parent_id, :title, :description,"
+                " :location_name, :location_address, :location_detail,"
+                " :latitude, :longitude, :poi_id, :coordinate_system,"
+                " :event_id, :due_at, 'TODO', :priority, :rrule, CAST(:images AS jsonb), 0)"
                 " RETURNING *"
             ),
             {
@@ -591,6 +684,11 @@ class PersonalService:
                 "event_id": event_id,
                 "title": payload["title"],
                 "description": payload.get("description"),
+                "location_name": _blank_to_none(payload.get("locationName")),
+                "location_address": _blank_to_none(payload.get("locationAddress")),
+                "location_detail": _blank_to_none(payload.get("locationDetail")),
+                "poi_id": _blank_to_none(payload.get("poiId")),
+                **_place_columns(payload),
                 "due_at": payload.get("dueAt"),
                 "priority": payload.get("priority") or "NORMAL",
                 "rrule": rrule,
@@ -611,6 +709,15 @@ class PersonalService:
             recurrence.validate_rrule(rrule)
         # 先看「显式清空」再看赋值：否则一旦设过截止时间就再也回不到「待安排」
         clear_due = bool(payload.get("clearDueAt"))
+        # 地点名称送空串表示清空整组地点（与日程同一套 PATCH 语义）
+        clear_place = (
+            payload.get("locationName") is not None
+            and _blank_to_none(payload.get("locationName")) is None
+        )
+        location_address_set = payload.get("locationAddress") is not None
+        location_detail_set = payload.get("locationDetail") is not None
+        poi_set = payload.get("poiId") is not None
+        coordinates_set = payload.get("latitude") is not None or payload.get("longitude") is not None
         # 关联同理：null 在 PATCH 里是「不修改」，解绑必须靠 clearEvent 显式表达
         if payload.get("clearEvent"):
             event_id = None
@@ -624,6 +731,21 @@ class PersonalService:
             text(
                 "UPDATE task SET title = COALESCE(:title, title),"
                 " description = COALESCE(:description, description),"
+                " location_name = CASE WHEN :clear_place THEN NULL"
+                "   ELSE COALESCE(:location_name, location_name) END,"
+                " location_address = CASE WHEN :clear_place THEN NULL"
+                "   WHEN :location_address_set THEN :location_address"
+                "   ELSE location_address END,"
+                " location_detail = CASE WHEN :location_detail_set THEN :location_detail"
+                "   ELSE location_detail END,"
+                " poi_id = CASE WHEN :clear_place THEN NULL"
+                "   WHEN :poi_set THEN :poi_id ELSE poi_id END,"
+                " latitude = CASE WHEN :clear_place THEN NULL"
+                "   WHEN :coordinates_set THEN :latitude ELSE latitude END,"
+                " longitude = CASE WHEN :clear_place THEN NULL"
+                "   WHEN :coordinates_set THEN :longitude ELSE longitude END,"
+                " coordinate_system = CASE WHEN :clear_place THEN NULL"
+                "   WHEN :coordinates_set THEN :coordinate_system ELSE coordinate_system END,"
                 " event_id = CASE WHEN :clear_event THEN NULL ELSE COALESCE(:event_id, event_id) END,"
                 " due_at = CASE WHEN :clear_due THEN NULL ELSE COALESCE(:due_at, due_at) END,"
                 " priority = COALESCE(:priority, priority), status = COALESCE(:status, status),"
@@ -638,10 +760,20 @@ class PersonalService:
             {
                 "id": task_id,
                 "clear_due": clear_due,
+                "clear_place": clear_place,
+                "location_address_set": location_address_set,
+                "location_detail_set": location_detail_set,
+                "poi_set": poi_set,
+                "coordinates_set": coordinates_set,
                 "clear_event": clear_event,
                 "event_id": event_id,
                 "title": payload.get("title"),
                 "description": payload.get("description"),
+                "location_name": _blank_to_none(payload.get("locationName")),
+                "location_address": _blank_to_none(payload.get("locationAddress")),
+                "location_detail": _blank_to_none(payload.get("locationDetail")),
+                "poi_id": _blank_to_none(payload.get("poiId")),
+                **_place_columns(payload),
                 "due_at": payload.get("dueAt"),
                 "priority": payload.get("priority"),
                 "status": payload.get("status"),
@@ -690,9 +822,11 @@ class PersonalService:
         row = self._session.execute(
             text(
                 "INSERT INTO task (calendar_id, owner_identity_id, title, description, due_at,"
-                " status, priority, sort_order)"
+                " location_name, location_address, location_detail, latitude, longitude,"
+                " poi_id, coordinate_system, status, priority, sort_order)"
                 " VALUES (:calendar_id, :identity, :title, :description, :due_at,"
-                " 'TODO', 'NORMAL', 0) RETURNING *"
+                " :location_name, :location_address, :location_detail, :latitude, :longitude,"
+                " :poi_id, :coordinate_system, 'TODO', 'NORMAL', 0) RETURNING *"
             ),
             {
                 "calendar_id": event["calendar_id"],
@@ -700,6 +834,13 @@ class PersonalService:
                 "title": event["title"],
                 "description": event["description"],
                 "due_at": event["at"],
+                "location_name": event["location_name"],
+                "location_address": event["location_address"],
+                "location_detail": event["location_detail"],
+                "latitude": event["latitude"],
+                "longitude": event["longitude"],
+                "poi_id": event["poi_id"],
+                "coordinate_system": event["coordinate_system"],
             },
         ).mappings().one()
         self._session.execute(
@@ -718,15 +859,25 @@ class PersonalService:
         row = self._session.execute(
             text(
                 "INSERT INTO event (calendar_id, creator_identity_id, source_type, title,"
-                " description, at, timezone, status, updated_after_dispatch)"
-                " VALUES (:calendar_id, :identity, 'PERSONAL', :title, :description, :at,"
-                " :timezone, 'CONFIRMED', false) RETURNING *"
+                " description, location_name, location_address, location_detail,"
+                " latitude, longitude, poi_id, coordinate_system,"
+                " at, timezone, status, updated_after_dispatch)"
+                " VALUES (:calendar_id, :identity, 'PERSONAL', :title, :description,"
+                " :location_name, :location_address, :location_detail, :latitude, :longitude,"
+                " :poi_id, :coordinate_system, :at, :timezone, 'CONFIRMED', false) RETURNING *"
             ),
             {
                 "calendar_id": calendar["id"],
                 "identity": identity_id,
                 "title": task["title"],
                 "description": task["description"],
+                "location_name": task["location_name"],
+                "location_address": task["location_address"],
+                "location_detail": task["location_detail"],
+                "latitude": task["latitude"],
+                "longitude": task["longitude"],
+                "poi_id": task["poi_id"],
+                "coordinate_system": task["coordinate_system"],
                 "at": at,
                 "timezone": calendar["timezone"],
             },
@@ -818,6 +969,8 @@ class PersonalService:
         entries: list[dict] = []
         if event_rows:
             for occurrence in self.list_events(identity_id, None, start, end):
+                if occurrence.get("done"):
+                    continue
                 group = event_rows.get(occurrence["eventId"])
                 if group is None:
                     continue
@@ -870,7 +1023,7 @@ class PersonalService:
                 "targetId": row["id"],
                 "occurrenceDate": None,
                 "title": row["title"],
-                "locationName": None,
+                "locationName": row["location_name"],
                 "at": row["due_at"],
                 "timezone": zones.get(row["calendar_id"], DEFAULT_TIMEZONE),
                 "minutesBefore": _sorted_minutes(task_rows[row["id"]]),
@@ -913,6 +1066,7 @@ def _event_view(row) -> dict:
         "poiId": row["poi_id"],
         "coordinateSystem": row["coordinate_system"],
         "at": row["at"],
+        "durationMinutes": row["duration_minutes"],
         "timezone": row["timezone"],
         "rrule": row["rrule"],
         "status": row["status"],
@@ -946,6 +1100,13 @@ def _task_view(row) -> dict:
         "eventTitle": event_title,
         "title": row["title"],
         "description": row["description"],
+        "locationName": row["location_name"],
+        "locationAddress": row["location_address"],
+        "locationDetail": row["location_detail"],
+        "latitude": _num(row["latitude"]),
+        "longitude": _num(row["longitude"]),
+        "poiId": row["poi_id"],
+        "coordinateSystem": row["coordinate_system"],
         "dueAt": row["due_at"],
         "status": row["status"],
         "completedAt": row["completed_at"],

@@ -123,6 +123,16 @@
       "auth": "access"
     },
     {
+      "method": "GET",
+      "path": "/api/v1/me/training-data",
+      "auth": "access"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/me/training-data",
+      "auth": "access"
+    },
+    {
       "method": "POST",
       "path": "/api/v1/me/deletion",
       "auth": "access"
@@ -235,6 +245,11 @@
     {
       "method": "DELETE",
       "path": "/api/v1/events/{id}",
+      "auth": "access"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/events/{id}/complete",
       "auth": "access"
     },
     {

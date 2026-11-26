@@ -5,7 +5,7 @@
  * 模型是 16MB 的二进制（`app/assets/models/ppocr/*.onnx` + 字典 `.txt`，都不进版本库，
  * 由 `scripts/fetch_ppocr_models.sh` 拉），代码里用 `import model from '...onnx'` 引用它们。
  *
- * <p>但 Metro 默认的 `assetExts` 里**没有** `onnx` 也没有 `txt`（那份清单只看图 / 音视频 /
+ * <p>但 Metro 默认的 `assetExts` 里**没有** `onnx` / `txt`（那份清单只看图 / 音视频 /
  * 压缩包 / 字体）。不补这两项，`import` 会在**打包阶段**直接报 `Unable to resolve module`，
  * 连 APK 都出不来——不是运行时才炸。
  */

@@ -933,6 +933,17 @@ function MainStack() {
         )}
       </AppStack.Screen>
 
+      {/* 语音输入：按住说话 → 转写 → 解析 → 与拍照识别共用的确认页（spec §4.1.9.1） */}
+      <AppStack.Screen name="VoiceInput">
+        {({ navigation }) => (
+          <VoiceInputScreen
+            onCancel={() => navigation.goBack()}
+            // replace：从确认页返回时回到日历，而不是又回到录音页
+            onReviewDrafts={(drafts) => navigation.replace('EventImport', { drafts })}
+          />
+        )}
+      </AppStack.Screen>
+
       <AppStack.Screen name="EventImport">
         {({ navigation, route }) => (
           <EventImportScreen

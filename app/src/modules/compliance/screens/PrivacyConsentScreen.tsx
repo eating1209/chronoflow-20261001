@@ -86,7 +86,7 @@ export function PrivacyConsentScreen({
           <SummaryLine text="语音输入需要麦克风权限和联网；录音只用于这次转写，转完立即删除，不保存、不用于训练。" />
           <SummaryLine text="不开启定位、相册权限时，您仍可手工输入地点、新建日程与待办，基本功能不受影响。" />
           <SummaryLine text="本应用不含广告、不含统计分析 SDK，也不提供个性化推荐或定向推送。" />
-          <SummaryLine text="您可以随时在「我的 → 隐私与合规 → 账号注销」注销账号并删除个人信息。" />
+          <SummaryLine text="您可以随时在「我的 → 账号与安全 → 账号注销」注销账号并删除个人信息。" />
           <SummaryLine text="如果您是 14 周岁以下的儿童，请在监护人陪同下阅读并取得监护人同意后再使用。" />
         </View>
 

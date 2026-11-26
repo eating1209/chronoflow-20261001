@@ -166,7 +166,7 @@ def check_policy_deletion_steps() -> None:
     policy = read(LEGAL / "privacy-policy.md")
     require_contains(
         policy,
-        ["账号注销", "我的 → 隐私与合规 → 账号注销", "15 个工作日"],
+        ["账号注销", "我的 → 账号与安全 → 账号注销", "15 个工作日"],
         "privacy-policy.md",
         "规范 §2.7 要求写明注销步骤，路径必须与 App 内真实入口一致",
     )
@@ -312,6 +312,8 @@ def check_ai_feature_scope() -> None:
         "shared-info-with-third-parties.md",
         "《与第三方共享个人信息清单》要保留 OCR 文字解析这一条",
     )
+
+    # ④ 权限与代码：声明了就必须真的申请，不能只写在文案里
     permissions = read(APP_SRC / "shared" / "permissions.ts")
     require(
         "microphone" in permissions,

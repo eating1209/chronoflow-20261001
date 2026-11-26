@@ -86,6 +86,15 @@ export const PERMISSION_RATIONALE: Record<PermissionKind, PermissionRationale> =
       + '您也可以选择「不允许」，改用键盘输入，其他功能不受影响。',
     deniedHint: '未获得麦克风权限，语音输入不可用；您仍可手工输入，其他功能不受影响。',
   },
+  microphone: {
+    title: '需要使用麦克风',
+    message:
+      '用于「按住说话」：把您说的一句话转成文字，再识别成日程草稿。\n\n'
+      + '录音只用于这一次转写，转完立即删除，我们不会保存、也不会用于训练。'
+      + '语音需要联网：录音会上传到我们的服务器，再由服务端转给模型服务商完成转写。\n\n'
+      + '您也可以选择「不允许」，改用键盘输入，其他功能不受影响。',
+    deniedHint: '未获得麦克风权限，语音输入不可用；您仍可手工输入，其他功能不受影响。',
+  },
 };
 
 export interface PermissionGateway {

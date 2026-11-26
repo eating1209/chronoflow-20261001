@@ -187,6 +187,16 @@ export CHRONOFLOW_KEY_PASSWORD='...'
 - **钥匙丢了 = 这个包名再也发不了更新**；keystore 与口令分两处备份。
 - 换钥匙后所有已装用户都装不上更新，必须重新出包并做备案变更。
 
+#### 4.1.2 语音输入（仅云端）
+
+语音输入复用 `POST /api/v1/ai/transcribe`，**没有本地兜底**，必须配置云端 ASR：
+
+- `/opt/chronoflow/.env` 配 `CHRONOFLOW_ASR_API_KEY=...`（留空回退 `CHRONOFLOW_AGENT_API_KEY`），模型默认 `qwen3-asr-flash`；
+- 改完 `docker compose up -d backend`；
+- 验证：未带令牌 POST 返回 401/20001（路由存在），带令牌上传一段 wav 返回 `{ text, language }`；
+- 断网或未配置时 App 会提示「语音需要联网」，**不会**改用本地识别（离线 Whisper 已移除）。
+- 隐私政策 v1.3 随 jar 部署；`deploy_backend.sh` 会校验 jar 内文本。只改 `.env` 不重建容器，合规文本不会更新。
+
 ### 4.2 发布（这一步才让用户"看到更新"）
 
 **最省事的做法：一条命令从后端一直做到发布验收**（版本号直接从 `app/app.json` 读）：

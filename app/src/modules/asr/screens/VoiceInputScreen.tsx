@@ -339,8 +339,8 @@ export function VoiceInputScreen({
         }}
       >
         <Text style={[styles.lead, { color: theme.color.textSecondary }]}>
-          按住说话，例如「明天下午三点和张总开会」。
-          {'\n'}识别后可先改字，再生成日程。需要联网。
+          按住下面的按钮，说出要做的事，例如「明天下午三点和张总开会」。
+          {'\n'}识别出的文字会先给你确认，再变成日程草稿。语音识别需要联网。
         </Text>
 
         <View style={styles.micWrap}>
@@ -370,7 +370,7 @@ export function VoiceInputScreen({
           <Text style={[styles.phaseHint, { color: theme.color.textTertiary }]}>
             {phase === 'recording' || phase === 'cancelling'
               ? '上滑取消，松手结束'
-              : `最长 ${MAX_RECORD_MS / 1000} 秒，松手识别`}
+              : `最长 ${MAX_RECORD_MS / 1000} 秒，松手后开始识别`}
           </Text>
         </View>
 
@@ -405,7 +405,7 @@ export function VoiceInputScreen({
               ]}
             />
             <Text style={[styles.editHint, { color: theme.color.textTertiary }]}>
-              识别可能有误，可先修改；解析需要联网。
+              识别可能出错，请先核对；这段文字会上传到我们的服务器解析成日程。
             </Text>
           </Card>
         ) : null}
@@ -430,7 +430,7 @@ export function VoiceInputScreen({
         ) : null}
 
         <Text style={[styles.privacy, { color: theme.color.textTertiary }]}>
-          录音仅用于本次转写，完成后立即删除。
+          录音只用于这次转写，转完立即删除；语音需要联网，转写由云端服务完成。
         </Text>
       </ScrollView>
     </Screen>

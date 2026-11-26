@@ -533,10 +533,11 @@ export function AgendaScreen({
           />
 
           {/*
-            日历下方的文字按钮：点此上传图片 → 一键添加日程（spec §4.1.9）。
-            链路：选来源（相册/拍照）→ 端侧 OCR（图片不出手机）→ 云端解析文字 →
-            确认页（补日期 / 改标题）→ 逐条写进日历。见 src/modules/vision/ocr/onDevice.ts 与
-            src/modules/vision/screens/EventImportScreen.tsx。
+            日历下方的文字按钮：识别日程（spec §4.1.9 / §4.1.9.1）。
+            面板里三个来源：
+            - 相册 / 拍照 → 端侧 OCR（图片不出手机）→ 云端解析文字；
+            - 语音 → 转写（云端优先、本机兜底）→ 同一段云端解析文字；
+            最后都进确认页（补日期 / 改标题）→ 逐条写进日历。
           */}
           {/* 按钮上下各一条横线：把它做成月历与当日日程之间独立的一条带 */}
           <View style={[styles.divider, { backgroundColor: theme.color.border }]} />

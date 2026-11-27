@@ -31,11 +31,11 @@ describe('passwordsMatch', () => {
 });
 
 describe('canSubmitPasswordLogin', () => {
-  const ok = { phone: '13800000000', password: 'chrono2026', acceptedPolicy: true };
+  const ok = { account: '13800000000', password: 'chrono2026', acceptedPolicy: true };
 
   it('手机号、密码、协议都满足才可提交', () => {
     expect(canSubmitPasswordLogin(ok)).toBe(true);
-    expect(canSubmitPasswordLogin({ ...ok, phone: '1380000' })).toBe(false);
+    expect(canSubmitPasswordLogin({ ...ok, account: '1380000' })).toBe(false);
     expect(canSubmitPasswordLogin({ ...ok, password: '' })).toBe(false);
     expect(canSubmitPasswordLogin({ ...ok, acceptedPolicy: false })).toBe(false);
   });

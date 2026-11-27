@@ -240,7 +240,7 @@ class ComplianceTest {
         // 7) 手机号真的被释放：同一个号可以重新注册成一个全新账号
         injectCode(phone, "654321");
         JsonNode relogin = postJson("/api/v1/auth/login/sms",
-                "{\"phone\":\"" + phone + "\",\"code\":\"654321\",\"deviceId\":\"device-9\"}");
+                "{\"account\":\"" + phone + "\",\"code\":\"654321\",\"deviceId\":\"device-9\"}");
         assertThat(relogin.path("data").path("needRegister").asBoolean())
                 .as("注销后同一手机号应当被当作新用户")
                 .isTrue();
@@ -253,10 +253,10 @@ class ComplianceTest {
     }
 
     private JsonNode registerAccountWithPersonalIdentity(String phone, String nickname) throws Exception {
-        String code = postJson("/api/v1/auth/sms/code", "{\"phone\":\"" + phone + "\"}")
+        String code = postJson("/api/v1/auth/sms/code", "{\"account\":\"" + phone + "\"}")
                 .path("data").path("debugCode").asText();
         String registerToken = postJson("/api/v1/auth/login/sms",
-                "{\"phone\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}")
+                "{\"account\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}")
                 .path("data").path("registerToken").asText();
         return postJsonWithBearer("/api/v1/identities/personal", registerToken,
                 "{\"nickname\":\"" + nickname + "\",\"deviceId\":\"device-1\"}");

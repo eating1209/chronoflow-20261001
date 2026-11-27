@@ -1,3 +1,4 @@
+import { accountIssue } from '../../../shared/accountIdentifier';
 /**
  * 隐私政策同意的纯逻辑（spec §12；应用宝《隐私政策提交内容及审核规范》§四）。
  *
@@ -15,7 +16,8 @@ export interface ConsentRecord {
 }
 
 export interface LoginGateInput {
-  phone: string;
+  /** 手机号或邮箱——登录页只有一个输入框，类型由服务端判定 */
+  account: string;
   code: string;
   /** 用户是否主动勾选了「我已阅读并同意…」——**默认必须是 false** */
   acceptedPolicy: boolean;
@@ -45,7 +47,9 @@ export function hasAcceptedPolicy(
 
 /** 登录按钮是否可点。三条都满足才放行——少一条就会出现「没勾同意也能登」。 */
 export function canSubmitLogin(input: LoginGateInput): boolean {
-  return input.phone.trim().length === 11
+  // 账号格式用 accountIssue 判（手机号或邮箱都算「填好了」），
+  // 不能用「长度是否为 11」——那会让邮箱账号永远提交不了。
+  return accountIssue(input.account) === null
     && input.code.trim().length === 6
     && input.acceptedPolicy;
 }
@@ -57,10 +61,16 @@ export function canSubmitLogin(input: LoginGateInput): boolean {
  * 那是货真价实的个人信息处理。与其在弹窗里解释「发码不算收集」，不如直接要求先同意
  * （首启弹窗已经同意过一次，这里只是登录页的再次确认）。
  */
+/**
+ * 能否点「获取验证码」。
+ *
+ * <p>账号可以是手机号或邮箱，所以判断「格式看起来完整」而不是「长度为 11」——
+ * 否则邮箱账号的按钮永远是灰的，用户会以为功能坏了。
+ */
 export function canRequestCode(
-  phone: string,
+  account: string,
   cooldownSeconds: number,
   acceptedPolicy: boolean,
 ): boolean {
-  return phone.trim().length === 11 && cooldownSeconds <= 0 && acceptedPolicy;
+  return accountIssue(account) === null && cooldownSeconds <= 0 && acceptedPolicy;
 }

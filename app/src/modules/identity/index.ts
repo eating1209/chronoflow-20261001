@@ -9,6 +9,7 @@
  */
 export { LoginScreen } from './screens/LoginScreen';
 export { RegisterScreen } from './screens/RegisterScreen';
+export { BindPhoneScreen } from './screens/BindPhoneScreen';
 export { PasswordScreen } from './screens/PasswordScreen';
 export { PasswordResetScreen } from './screens/PasswordResetScreen';
 export { PhoneChangeScreen } from './screens/PhoneChangeScreen';

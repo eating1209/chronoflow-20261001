@@ -42,7 +42,7 @@ describe('首启隐私政策同意（规范 §四 D1/D3）', () => {
 });
 
 describe('登录页的同意勾选框（规范 §四 D2）', () => {
-  const filled = { phone: '13800000000', code: '123456' };
+  const filled = { account: '13800000000', code: '123456' };
 
   it('没勾同意就登录不了——这正是「默认同意」的反面', () => {
     expect(canSubmitLogin({ ...filled, acceptedPolicy: false })).toBe(false);
@@ -50,8 +50,8 @@ describe('登录页的同意勾选框（规范 §四 D2）', () => {
   });
 
   it('手机号或验证码没填全时也不放行', () => {
-    expect(canSubmitLogin({ phone: '138', code: '123456', acceptedPolicy: true })).toBe(false);
-    expect(canSubmitLogin({ phone: '13800000000', code: '12', acceptedPolicy: true })).toBe(false);
+    expect(canSubmitLogin({ account: '138', code: '123456', acceptedPolicy: true })).toBe(false);
+    expect(canSubmitLogin({ account: '13800000000', code: '12', acceptedPolicy: true })).toBe(false);
   });
 
   it('没勾同意时连验证码都不发——发码本身就已经把手机号交出去了', () => {

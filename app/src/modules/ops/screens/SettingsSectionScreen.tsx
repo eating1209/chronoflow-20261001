@@ -41,7 +41,7 @@ import {
   setSystemCalendarEnabled,
   systemCalendarAvailable,
   systemCalendarEnabled,
-} from '../../calendar/systemCalendar';
+} from '../../calendar/system';
 import {
   clearTaskBarNotification,
   requestTaskBarOverlayPermission,

@@ -353,10 +353,10 @@ class AdminModuleTest {
      * <p>测试里手机号同时充当成员唯一识别 ID。
      */
     private LoginResult loginOrgMemberWithTokens(String phone, long orgId) throws Exception {
-        String code = postJson("/api/v1/auth/sms/code", null, "{\"phone\":\"" + phone + "\"}")
+        String code = postJson("/api/v1/auth/sms/code", null, "{\"account\":\"" + phone + "\"}")
                 .path("data").path("debugCode").asText();
         String registerToken = postJson("/api/v1/auth/login/sms", null,
-                "{\"phone\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"dev\"}")
+                "{\"account\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"dev\"}")
                 .path("data").path("registerToken").asText();
         String personalToken = postJson("/api/v1/identities/personal", registerToken,
                 "{\"nickname\":\"成员" + phone.substring(phone.length() - 4) + "\",\"deviceId\":\"dev\"}")

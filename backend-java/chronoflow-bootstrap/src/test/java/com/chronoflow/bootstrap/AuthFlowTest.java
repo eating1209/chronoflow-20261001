@@ -107,7 +107,7 @@ class AuthFlowTest {
         String code = requestSmsCode(phone);
 
         JsonNode login = postJson("/api/v1/auth/login/sms",
-                "{\"phone\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}");
+                "{\"account\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}");
         assertThat(login.path("data").path("needRegister").asBoolean()).isTrue();
         String registerToken = login.path("data").path("registerToken").asText();
         assertThat(registerToken).isNotBlank();
@@ -134,7 +134,7 @@ class AuthFlowTest {
         String phone = "13800000107";
         String code = requestSmsCode(phone);
         String registerToken = postJson("/api/v1/auth/login/sms",
-                "{\"phone\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}")
+                "{\"account\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}")
                 .path("data").path("registerToken").asText();
 
         mockMvc.perform(get("/api/v1/me").header("Authorization", "Bearer " + registerToken))
@@ -146,13 +146,13 @@ class AuthFlowTest {
     @DisplayName("审核账号：不先发码也能用固定验证码登录，其他号码用同一个码一律拒绝")
     void reviewAccountCanLoginWithFixedCode() throws Exception {
         JsonNode ok = postJson("/api/v1/auth/login/sms",
-                "{\"phone\":\"13800000201\",\"code\":\"246810\",\"deviceId\":\"review-device\"}");
+                "{\"account\":\"13800000201\",\"code\":\"246810\",\"deviceId\":\"review-device\"}");
         assertThat(ok.path("code").asInt()).isZero();
         assertThat(ok.path("data").path("needRegister").asBoolean()).isTrue();
 
         mockMvc.perform(post("/api/v1/auth/login/sms")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"phone\":\"13800000202\",\"code\":\"246810\",\"deviceId\":\"device-1\"}"))
+                        .content("{\"account\":\"13800000202\",\"code\":\"246810\",\"deviceId\":\"device-1\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(20006));
     }
@@ -165,7 +165,7 @@ class AuthFlowTest {
 
         mockMvc.perform(post("/api/v1/auth/sms/code")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"phone\":\"" + phone + "\"}"))
+                        .content("{\"account\":\"" + phone + "\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(20005));
     }
@@ -178,7 +178,7 @@ class AuthFlowTest {
 
         mockMvc.perform(post("/api/v1/auth/login/sms")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"phone\":\"" + phone + "\",\"code\":\"000000\",\"deviceId\":\"device-1\"}"))
+                        .content("{\"account\":\"" + phone + "\",\"code\":\"000000\",\"deviceId\":\"device-1\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(20006));
 
@@ -209,7 +209,7 @@ class AuthFlowTest {
         // 再次登录：依旧只登录个人账号，不再有「选身份」这一步
         injectCode(phone, "123456");
         JsonNode login = postJson("/api/v1/auth/login/sms",
-                "{\"phone\":\"" + phone + "\",\"code\":\"123456\",\"deviceId\":\"device-2\"}");
+                "{\"account\":\"" + phone + "\",\"code\":\"123456\",\"deviceId\":\"device-2\"}");
         assertThat(login.path("data").path("needRegister").asBoolean()).isFalse();
         assertThat(login.path("data").path("session").path("identity").path("identityType").asText())
                 .isEqualTo("PERSONAL");
@@ -273,7 +273,7 @@ class AuthFlowTest {
         // 但账号本身没有被停用：用新密码还能立刻登录（这条是回归——曾经打成「账号作废」标记，
         // 结果连本人都登不进来）
         JsonNode relogin = postJson("/api/v1/auth/login/password",
-                "{\"phone\":\"" + phone + "\",\"password\":\"newpass123456\",\"deviceId\":\"device-2\"}");
+                "{\"account\":\"" + phone + "\",\"password\":\"newpass123456\",\"deviceId\":\"device-2\"}");
         assertThat(relogin.path("code").asInt()).isZero();
         // 密码登录与验证码登录返回同一种结构：已有个人身份 → session
         assertThat(relogin.path("data").path("session").path("accessToken").asText()).isNotBlank();
@@ -354,7 +354,7 @@ class AuthFlowTest {
         injectCode(phone, "246810");
         // 登录直接签发个人身份的令牌（spec §3.2），deviceId 就是这台设备
         JsonNode session = postJson("/api/v1/auth/login/sms",
-                "{\"phone\":\"" + phone + "\",\"code\":\"246810\",\"deviceId\":\"device-A\"}")
+                "{\"account\":\"" + phone + "\",\"code\":\"246810\",\"deviceId\":\"device-A\"}")
                 .path("data").path("session");
         String accessToken = session.path("accessToken").asText();
         String sessionRefreshToken = session.path("refreshToken").asText();
@@ -378,7 +378,7 @@ class AuthFlowTest {
 
         // 用新密码登录：同样只认个人身份，直接给出个人身份的令牌对
         JsonNode passwordLogin = postJson("/api/v1/auth/login/password",
-                "{\"phone\":\"" + phone + "\",\"password\":\"mySecret123\",\"deviceId\":\"device-A\"}");
+                "{\"account\":\"" + phone + "\",\"password\":\"mySecret123\",\"deviceId\":\"device-A\"}");
         assertThat(passwordLogin.path("data").path("needRegister").asBoolean()).isFalse();
         assertThat(passwordLogin.path("data").path("session").path("identity").path("identityType").asText())
                 .isEqualTo("PERSONAL");
@@ -386,7 +386,7 @@ class AuthFlowTest {
         // 错误密码返回 20011
         mockMvc.perform(post("/api/v1/auth/login/password")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"phone\":\"" + phone + "\",\"password\":\"wrong-password\","
+                        .content("{\"account\":\"" + phone + "\",\"password\":\"wrong-password\","
                                 + "\"deviceId\":\"device-A\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(20011));
@@ -452,7 +452,7 @@ class AuthFlowTest {
     }
 
     private String requestSmsCode(String phone) throws Exception {
-        JsonNode response = postJson("/api/v1/auth/sms/code", "{\"phone\":\"" + phone + "\"}");
+        JsonNode response = postJson("/api/v1/auth/sms/code", "{\"account\":\"" + phone + "\"}");
         assertThat(response.path("code").asInt()).isZero();
         String debugCode = response.path("data").path("debugCode").asText();
         assertThat(debugCode).hasSize(6);
@@ -466,7 +466,7 @@ class AuthFlowTest {
     private JsonNode registerAccountWithPersonalIdentity(String phone, String nickname) throws Exception {
         String code = requestSmsCode(phone);
         String registerToken = postJson("/api/v1/auth/login/sms",
-                "{\"phone\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}")
+                "{\"account\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}")
                 .path("data").path("registerToken").asText();
         return postJsonWithBearer("/api/v1/identities/personal", registerToken,
                 "{\"nickname\":\"" + nickname + "\",\"deviceId\":\"device-1\"}");

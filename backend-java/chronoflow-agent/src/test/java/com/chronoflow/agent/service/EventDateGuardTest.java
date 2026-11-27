@@ -24,7 +24,7 @@ class EventDateGuardTest {
     private static final LocalDate TODAY = LocalDate.parse("2026-11-03");
 
     private static ParsedEventDraft draft(String at) {
-        return new ParsedEventDraft("开会", at, "Asia/Shanghai", null, null);
+        return new ParsedEventDraft("开会", "EVENT", at, "Asia/Shanghai", null, null);
     }
 
     private static String guardOne(String text, String at) {

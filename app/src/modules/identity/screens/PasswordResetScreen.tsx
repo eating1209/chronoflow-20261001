@@ -7,6 +7,11 @@ import { useAppTheme, useRuntime } from '../../../context/AppContext';
 import { userFacingError } from '../../../shared/errors';
 import { passwordIssue, passwordsMatch } from '../domain/password';
 import { SMS_COOLDOWN_SECONDS, nextCooldown, sendCodeLabel } from '../domain/smsCooldown';
+import {
+  accountKind,
+  accountPlaceholder,
+  keyboardFor,
+} from '../../../shared/accountIdentifier';
 
 /**
  * 忘记密码（未登录）：手机号 + 短信验证码 → 设置新密码。
@@ -18,7 +23,7 @@ export function PasswordResetScreen({ onBack }: { onBack: () => void }) {
   const theme = useAppTheme();
   const { api } = useRuntime();
 
-  const [phone, setPhone] = useState('');
+  const [account, setAccount] = useState('');
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -35,7 +40,7 @@ export function PasswordResetScreen({ onBack }: { onBack: () => void }) {
     return () => clearTimeout(timer);
   }, [cooldown]);
 
-  const phoneOk = /^1\d{10}$/.test(phone.trim());
+  const phoneOk = /^1\d{10}$/.test(account.trim());
   const ready = phoneOk && code.trim().length === 6 && passwordIssue(password) === null
     && passwordsMatch(password, confirm);
 
@@ -47,7 +52,7 @@ export function PasswordResetScreen({ onBack }: { onBack: () => void }) {
     setSending(true);
     setError(null);
     try {
-      await api.sendSmsCode(phone.trim());
+      await api.sendSmsCode(account.trim());
       setCooldown(SMS_COOLDOWN_SECONDS);
     } catch (cause) {
       setError(userFacingError(cause, '验证码发送失败'));
@@ -69,7 +74,7 @@ export function PasswordResetScreen({ onBack }: { onBack: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await api.resetPassword(phone.trim(), code.trim(), password);
+      await api.resetPassword(account.trim(), code.trim(), password);
       Alert.alert('密码已重置', '请用新密码登录。', [{ text: '好', onPress: onBack }]);
     } catch (cause) {
       setError(userFacingError(cause, '重置密码失败'));
@@ -85,11 +90,11 @@ export function PasswordResetScreen({ onBack }: { onBack: () => void }) {
         <Card>
           <Text style={[styles.label, { color: theme.color.textSecondary }]}>手机号</Text>
           <TextInput
-            value={phone}
-            onChangeText={setPhone}
-            keyboardType="phone-pad"
+            value={account}
+            onChangeText={setAccount}
+            keyboardType={keyboardFor(accountKind(account))}
             maxLength={11}
-            placeholder="11 位手机号"
+            placeholder={accountPlaceholder(account)}
             accessibilityLabel="手机号"
             placeholderTextColor={theme.color.textTertiary}
             underlineColorAndroid="transparent"

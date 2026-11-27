@@ -53,18 +53,18 @@ public class AuthController {
     @PostMapping("/sms/code")
     public ApiResponse<SendSmsCodeResponse> sendSmsCode(@Valid @RequestBody SendSmsCodeRequest request,
                                                        HttpServletRequest servletRequest) {
-        return ApiResponse.ok(verificationCodeService.send(request.phone(), resolveClientIp(servletRequest)));
+        return ApiResponse.ok(verificationCodeService.send(request.account(), resolveClientIp(servletRequest)));
     }
 
     @PostMapping("/login/sms")
     public ApiResponse<SmsLoginResponse> loginBySms(@Valid @RequestBody SmsLoginRequest request) {
-        return ApiResponse.ok(authService.loginBySms(request.phone(), request.code(), request.deviceId()));
+        return ApiResponse.ok(authService.loginBySms(request.account(), request.code(), request.deviceId()));
     }
 
     @PostMapping("/login/password")
     public ApiResponse<SmsLoginResponse> loginByPassword(@Valid @RequestBody PasswordLoginRequest request) {
         return ApiResponse.ok(authService.loginByPassword(
-                request.phone(), request.password(), request.deviceId()));
+                request.account(), request.password(), request.deviceId()));
     }
 
     /**
@@ -75,13 +75,13 @@ public class AuthController {
     public ApiResponse<SmsLoginResponse> registerWithPassword(
             @Valid @RequestBody RegisterWithPasswordRequest request) {
         return ApiResponse.ok(authService.registerWithPassword(
-                request.phone(), request.code(), request.newPassword(), request.deviceId()));
+                request.account(), request.code(), request.newPassword(), request.deviceId()));
     }
 
     /** 忘记密码：短信验证码验证通过后重设密码（无需登录）。 */
     @PostMapping("/password/reset")
     public ApiResponse<Void> resetPassword(@Valid @RequestBody PasswordResetRequest request) {
-        authService.resetPasswordBySms(request.phone(), request.code(), request.newPassword());
+        authService.resetPasswordBySms(request.account(), request.code(), request.newPassword());
         return ApiResponse.ok();
     }
 

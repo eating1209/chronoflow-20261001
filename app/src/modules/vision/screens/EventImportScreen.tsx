@@ -15,7 +15,7 @@ import {
 import {
   syncEventToSystemCalendar,
   syncTaskToSystemCalendar,
-} from '../../calendar/systemCalendar';
+} from '../../calendar/system';
 import {
   buildCreateTaskPayload,
   taskDraftFromRecognized,

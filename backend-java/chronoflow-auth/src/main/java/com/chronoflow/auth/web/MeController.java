@@ -138,16 +138,24 @@ public class MeController {
         AccountSecurityView view = accountSecurity.view(principal.accountId());
         boolean hasOldCode = hasText(request.oldCode());
         boolean hasEmailCode = hasText(request.emailCode());
-        if (hasOldCode == hasEmailCode) {
-            throw BizException.of(ErrorCode.PARAM_INVALID, "请提供旧手机号验证码或邮箱验证码（二选一）");
-        }
-        if (hasEmailCode) {
-            if (!view.emailVerified() || view.email() == null || view.email().isBlank()) {
-                throw BizException.of(ErrorCode.PARAM_INVALID, "账号还没有绑定邮箱，无法用邮箱验证");
+        // 「首次绑定」：账号当前还没有手机号（邮箱注册的账号就是这样），没有旧号可验。
+        // 这种情况跳过本人验证——持有该账号的有效令牌本身就是身份证明。
+        boolean firstBind = view.phone() == null || view.phone().isBlank();
+        if (!firstBind) {
+            if (hasOldCode == hasEmailCode) {
+                throw BizException.of(ErrorCode.PARAM_INVALID, "请提供旧手机号验证码或邮箱验证码（二选一）");
             }
-            emailCodeService.verify(view.email(), EmailCodeService.Scene.PHONE_CHANGE, request.emailCode());
-        } else {
-            smsCodeService.verify(view.phone(), request.oldCode());
+            if (hasEmailCode) {
+                if (!view.emailVerified() || view.email() == null || view.email().isBlank()) {
+                    throw BizException.of(ErrorCode.PARAM_INVALID, "账号还没有绑定邮箱，无法用邮箱验证");
+                }
+                emailCodeService.verify(view.email(), EmailCodeService.Scene.PHONE_CHANGE, request.emailCode());
+            } else {
+                smsCodeService.verify(view.phone(), request.oldCode());
+            }
+        } else if (hasOldCode || hasEmailCode) {
+            // 首次绑定时不该带本人验证码：带了说明客户端逻辑混乱，明确拒绝而不是静默忽略
+            throw BizException.of(ErrorCode.PARAM_INVALID, "该账号还没有手机号，无需提供旧号或邮箱验证码");
         }
         smsCodeService.verify(request.newPhone().trim(), request.newCode());
         return ApiResponse.ok(accountSecurity.changePhone(principal.accountId(), request.newPhone()));

@@ -66,3 +66,9 @@ Thumbs.db
 
 # Windows 复制过来的 NTFS 备用数据流残留（WSL 里会显示成 *:Zone.Identifier）
 *Zone.Identifier
+
+# 旧的参考克隆目录（仓库已移到根目录，这个是迁移残留）
+.reference-chronoflow.old/
+
+# 构建产物
+*.tsbuildinfo

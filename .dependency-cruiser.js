@@ -63,7 +63,7 @@ module.exports = {
       // 两者都不把 React Native 页面带进调用方。
       from: { path: '^app/src/modules/([^/]+)/' },
       to: {
-        path: '^app/src/modules/(?!$1/)[^/]+/(?!index\\.ts$|pure\\.ts$|components\\.ts$).+',
+        path: '^app/src/modules/(?!$1/)[^/]+/(?!index\\.ts$|pure\\.ts$|components\\.ts$|system\\.ts$).+',
       },
     },
     {

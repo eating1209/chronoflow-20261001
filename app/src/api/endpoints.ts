@@ -104,38 +104,42 @@ export interface TaskWritePayload {
 export function createEndpoints(client: ApiClient) {
   return {
     // ------------------------------------------------------------- 认证
-    sendSmsCode: (phone: string) =>
+    /**
+     * 发送登录验证码。`account` 既可以是手机号也可以是邮箱——
+     * 服务端识别后分别走短信 / 邮件通道，客户端不需要知道区别。
+     */
+    sendSmsCode: (account: string) =>
       client.post<{ expiresIn: number; debugCode?: string }>(
         '/api/v1/auth/sms/code',
-        { phone },
+        { account },
         { skipAuthRetry: true },
       ),
     /** 登录只认个人账号：已有个人身份时直接返回它的令牌对（spec §3.2）。 */
-    loginBySms: (phone: string, code: string, deviceId: string) =>
+    loginBySms: (account: string, code: string, deviceId: string) =>
       client.post<SmsLoginResponse>(
         '/api/v1/auth/login/sms',
-        { phone, code, deviceId },
+        { account, code, deviceId },
         { skipAuthRetry: true },
       ),
     /** 手机号 + 密码登录（需先在「账号与安全」里设置过密码）。 */
-    loginByPassword: (phone: string, password: string, deviceId: string) =>
+    loginByPassword: (account: string, password: string, deviceId: string) =>
       client.post<SmsLoginResponse>(
         '/api/v1/auth/login/password',
-        { phone, password, deviceId },
+        { account, password, deviceId },
         { skipAuthRetry: true },
       ),
     /** 注册账号：手机号 + 短信验证码 + 自设密码（验证码证明手机号归属）。 */
-    registerWithPassword: (phone: string, code: string, newPassword: string, deviceId: string) =>
+    registerWithPassword: (account: string, code: string, newPassword: string, deviceId: string) =>
       client.post<SmsLoginResponse>(
         '/api/v1/auth/register/password',
-        { phone, code, newPassword, deviceId },
+        { account, code, newPassword, deviceId },
         { skipAuthRetry: true },
       ),
     /** 忘记密码：短信验证码验证通过后重设密码（无需登录）。 */
-    resetPassword: (phone: string, code: string, newPassword: string) =>
+    resetPassword: (account: string, code: string, newPassword: string) =>
       client.post<void>(
         '/api/v1/auth/password/reset',
-        { phone, code, newPassword },
+        { account, code, newPassword },
         { skipAuthRetry: true },
       ),
     selectIdentity: (selectToken: string, identityId: number, deviceId: string) =>
@@ -414,18 +418,6 @@ export function createEndpoints(client: ApiClient) {
      * 没配置发布信息的部署会回 `versionCode: 0`，调用方据此认为「没有更新」。
      */
     appRelease: () => client.get<AppRelease>('/api/v1/system/app-release'),
-    /**
-     * 语音 → 文字（spec §4.1.9.1）。
-     *
-     * <p>与 `uploadImage` 同一条 multipart 路径：必须用 expo-file-system 的 File，
-     * 不能写 `{ uri, name, type }`（Expo SDK 57 的 fetch 不接受，见 `uploadImage` 的注释）。
-     * 音频只在服务端内存里转发给百炼，**不落盘、不保存**。
-     */
-    transcribeAudio: (uri: string) => {
-      const form = new FormData();
-      form.append('file', new File(uri) as unknown as Blob);
-      return client.upload<TranscriptionResult>('/api/v1/ai/transcribe', form);
-    },
     /** 提交意见反馈（spec §4.1.9）。images 是上传通道返回的相对 URL 数组。 */
     submitFeedback: (payload: {
       category: FeedbackCategory;

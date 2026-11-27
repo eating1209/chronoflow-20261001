@@ -1,16 +1,10 @@
 import type { EventAvailability, EventDetail, EventStatus, Priority } from '../../../shared/api';
 import { localDateKey } from './agenda';
 import { APP_UTC_OFFSET } from './calendar';
-import type { EditorSwitchSnapshot, ReminderSoundChoice } from './editorSelection';
+import type { EditorSwitchSnapshot, EventPlace, ReminderSoundChoice } from './editorTypes';
+export type { EventPlace };
 
 /** 已选地点。坐标可空——手工输入的地点只有名字。 */
-export interface EventPlace {
-  poiId: string | null;
-  name: string;
-  address: string | null;
-  latitude: number | null;
-  longitude: number | null;
-}
 
 /**
  * 新建日程草稿。字段对齐主流系统日历（spec §4.1.4）。

@@ -1,5 +1,7 @@
 import type { EventPlace } from './eventDraft';
-import type { Priority } from '../../../shared/api';
+import type { EditorSwitchSnapshot, ReminderSoundChoice } from './editorTypes';
+
+export type { EditorSwitchSnapshot, ReminderSoundChoice };
 import type { Recurrence } from './recurrence';
 
 /**
@@ -9,7 +11,6 @@ import type { Recurrence } from './recurrence';
  * 提醒排期属于 notifications 模块，而 notifications 的排期又要用到日历的纯函数。
  * 纯层反向依赖 notifications 会形成「calendar/pure → notifications → calendar/pure」的环。
  */
-export type ReminderSoundChoice = 'silent' | 'default' | 'alarm';
 
 /**
  * 新建页从「日程」切到「待办」（或反向）时的公共快照。
@@ -18,23 +19,6 @@ export type ReminderSoundChoice = 'silent' | 'default' | 'alarm';
  * 两边都有的概念，避免把某一侧的私有字段硬塞进另一侧。日期与时间在切换时
  * 按「日程发生时刻 / 待办截止时刻」互相映射，标题、备注、重复、提醒原样保留。
  */
-export interface EditorSwitchSnapshot {
-  title: string;
-  description: string;
-  priority: Priority;
-  rrule: string;
-  reminders: number[];
-  reminderSound: ReminderSoundChoice;
-  dateKey: string;
-  time: string;
-  /** 日程结束时间；切到待办时只使用开始时间作为截止时间，切回来时保留。 */
-  endTime?: string;
-  hasDue: boolean;
-  place: EventPlace | null;
-  locationDetail: string;
-  eventId: number | null;
-  eventTitle: string | null;
-}
 
 /**
  * 二级页回传给编辑页的参数。

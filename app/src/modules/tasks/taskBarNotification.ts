@@ -1,9 +1,10 @@
 import { DeviceEventEmitter, NativeModules, Platform, TurboModuleRegistry } from 'react-native';
+import { askPermission } from '../../shared/permission';
 
 import type { Endpoints } from '../../api/endpoints';
 import type { EventOccurrence, Task } from '../../shared/api';
 import { APP_TIMEZONE, dateKeyToIso, localDateKey } from '../calendar/pure';
-import { removeSystemCalendarTask } from '../calendar/systemCalendar';
+import { removeSystemCalendarTask } from '../calendar/system';
 import { buildTaskBarPayload } from './domain/taskBar';
 import { eventOverviewEntry, taskOverviewEntry } from './domain/taskOverview';
 
@@ -370,13 +371,10 @@ export async function taskBarNotificationPermissionGranted(): Promise<boolean> {
     }
   }
 
-  const Notifications = await notificationsModule();
-  if (!Notifications) {
-    return false;
-  }
+  // 权限状态查询统一走 shared/permission.ts（quiet 模式只查、不弹窗），
+  // 不在这里直接碰 expo 的 PermissionsAsync —— 那是「先说明用途再申请」的唯一入口。
   try {
-    const permission = await Notifications.getPermissionsAsync();
-    return permission.status === 'granted';
+    return await askPermission('notification', { quiet: true });
   } catch {
     return false;
   }

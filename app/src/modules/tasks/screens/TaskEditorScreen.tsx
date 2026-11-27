@@ -26,7 +26,7 @@ import {
 } from '../../../shared/ui';
 import { useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
 import { WheelDatePicker, WheelLayer, WheelTimePicker } from '../../calendar/components';
-import { removeSystemCalendarTask, syncTaskToSystemCalendar } from '../../calendar/systemCalendar';
+import { removeSystemCalendarTask, syncTaskToSystemCalendar } from '../../calendar/system';
 import {
   buildRrule,
   describeRecurrence,

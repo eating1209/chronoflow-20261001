@@ -19,19 +19,19 @@ public final class AuthDtos {
 
     public static final String PHONE_PATTERN = "^1[3-9]\\d{9}$";
 
+    /**
+     * 发送验证码。`account` 既可以是手机号也可以是邮箱，由服务端识别
+     * （见 AccountIdentifier）——客户端只有一个输入框，不该自己判断类型。
+     */
     public record SendSmsCodeRequest(
-            @NotBlank(message = "手机号不能为空")
-            @Pattern(regexp = PHONE_PATTERN, message = "手机号格式不正确")
-            String phone) {
+            @NotBlank(message = "请输入手机号或邮箱") String account) {
     }
 
     public record SendSmsCodeResponse(long expiresIn, String debugCode) {
     }
 
     public record SmsLoginRequest(
-            @NotBlank(message = "手机号不能为空")
-            @Pattern(regexp = PHONE_PATTERN, message = "手机号格式不正确")
-            String phone,
+            @NotBlank(message = "请输入手机号或邮箱") String account,
             @NotBlank(message = "验证码不能为空") String code,
             /** 设备标识：令牌与设备绑定（单身份最多 5 台，spec §3.5） */
             @NotBlank(message = "deviceId 不能为空") String deviceId) {
@@ -114,8 +114,7 @@ public final class AuthDtos {
 
     /** 注册账号：手机号 + 短信验证码 + 自设密码（验证码证明手机号归属）。 */
     public record RegisterWithPasswordRequest(
-            @NotBlank(message = "手机号不能为空")
-            @Pattern(regexp = PHONE_PATTERN, message = "手机号格式不正确") String phone,
+            @NotBlank(message = "请输入手机号或邮箱") String account,
             @NotBlank(message = "验证码不能为空") String code,
             @NotBlank(message = "密码不能为空")
             @Size(min = 8, max = 20, message = "密码长度需在 8-20 之间") String newPassword,
@@ -124,16 +123,14 @@ public final class AuthDtos {
 
     /** 忘记密码：手机号 + 短信验证码 + 新密码。 */
     public record PasswordResetRequest(
-            @NotBlank(message = "手机号不能为空")
-            @Pattern(regexp = PHONE_PATTERN, message = "手机号格式不正确") String phone,
+            @NotBlank(message = "请输入手机号或邮箱") String account,
             @NotBlank(message = "验证码不能为空") String code,
             @NotBlank(message = "新密码不能为空")
             @Size(min = 8, max = 20, message = "密码长度需在 8-20 之间") String newPassword) {
     }
 
     public record PasswordLoginRequest(
-            @NotBlank(message = "手机号不能为空")
-            @Pattern(regexp = PHONE_PATTERN, message = "手机号格式不正确") String phone,
+            @NotBlank(message = "请输入手机号或邮箱") String account,
             @NotBlank(message = "密码不能为空") String password,
             @NotBlank(message = "deviceId 不能为空") String deviceId) {
     }

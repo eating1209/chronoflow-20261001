@@ -744,10 +744,10 @@ class OrgModuleTest {
 
     /** 用手机号注册个人账号，返回个人身份的令牌。 */
     private String registerPersonalAccount(String phone) throws Exception {
-        String code = postJson("/api/v1/auth/sms/code", null, "{\"phone\":\"" + phone + "\"}")
+        String code = postJson("/api/v1/auth/sms/code", null, "{\"account\":\"" + phone + "\"}")
                 .path("data").path("debugCode").asText();
         String registerToken = postJson("/api/v1/auth/login/sms", null,
-                "{\"phone\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"dev\"}")
+                "{\"account\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"dev\"}")
                 .path("data").path("registerToken").asText();
         return postJson("/api/v1/identities/personal", registerToken,
                 "{\"nickname\":\"用户" + phone.substring(phone.length() - 4) + "\",\"deviceId\":\"dev\"}")

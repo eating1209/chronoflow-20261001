@@ -85,7 +85,11 @@ class BackendFoundationTest {
                 // spec §5.10 意见反馈（图片走 /uploads/** 文件存储，这里只存相对 URL）
                 "feedback",
                 // spec §4.5 推送：App 上报的推送标识（服务端触发的事件要按它找设备）
-                "push_device");
+                "push_device",
+                // V23：训练用途的 OCR 采样（默认关闭，90 天到期清理；注销账号立即删）
+                "training_sample",
+                // V24：日程按「重复实例」记录完成状态，重复日程只完成带 occurrenceDate 的那一次
+                "event_completion");
 
         List<String> actual = jdbcTemplate.queryForList(
                 "SELECT table_name FROM information_schema.tables "

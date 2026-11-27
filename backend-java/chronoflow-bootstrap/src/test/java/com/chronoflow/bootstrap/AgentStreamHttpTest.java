@@ -162,9 +162,9 @@ class AgentStreamHttpTest {
     // ---------------------------------------------------------------- helpers
 
     private String register() throws Exception {
-        JsonNode code = post("/api/v1/auth/sms/code", null, "{\"phone\":\"13800000701\"}");
+        JsonNode code = post("/api/v1/auth/sms/code", null, "{\"account\":\"13800000701\"}");
         JsonNode login = post("/api/v1/auth/login/sms", null,
-                "{\"phone\":\"13800000701\",\"code\":\""
+                "{\"account\":\"13800000701\",\"code\":\""
                         + code.path("data").path("debugCode").asText() + "\",\"deviceId\":\"d1\"}");
         JsonNode created = post("/api/v1/identities/personal",
                 login.path("data").path("registerToken").asText(),

@@ -97,7 +97,7 @@
       "onnxruntime-react-native"
     ],
     "extra": {
-      "apiBaseUrl": "https://chronocloud.top"
+      "apiBaseUrl": "http://60.205.142.205:8080"
     }
   }
 }

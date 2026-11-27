@@ -3,6 +3,7 @@ package com.chronoflow.auth.service;
 import com.chronoflow.auth.config.AuthProperties;
 import com.chronoflow.auth.dto.AuthDtos;
 import com.chronoflow.auth.dto.AuthDtos.SendSmsCodeResponse;
+import com.chronoflow.auth.mail.EmailSender;
 import com.chronoflow.auth.sms.SmsSender;
 import com.chronoflow.auth.store.VerificationCodeStore;
 import com.chronoflow.common.api.ErrorCode;
@@ -25,30 +26,43 @@ import java.util.regex.Pattern;
 public class VerificationCodeService {
 
     private static final Logger log = LoggerFactory.getLogger(VerificationCodeService.class);
-    private static final Pattern PHONE = Pattern.compile(AuthDtos.PHONE_PATTERN);
     private static final Duration DAILY_WINDOW = Duration.ofDays(1);
 
     private final VerificationCodeStore store;
     private final AuthProperties properties;
     private final SmsSender smsSender;
+    /** 邮箱账号走这个通道；与短信共用同一套验证码存储与频控 */
+    private final EmailSender emailSender;
     private final SecureRandom random = new SecureRandom();
 
     public VerificationCodeService(VerificationCodeStore store,
                                    AuthProperties properties,
-                                   SmsSender smsSender) {
+                                   SmsSender smsSender,
+                                   EmailSender emailSender) {
         this.store = store;
         this.properties = properties;
         this.smsSender = smsSender;
+        this.emailSender = emailSender;
     }
 
-    public SendSmsCodeResponse send(String phone, String clientIp) {
-        if (!PHONE.matcher(phone).matches()) {
-            throw BizException.of(ErrorCode.PARAM_INVALID, "手机号格式不正确");
-        }
+    /**
+     * 发送登录验证码。`account` 可以是手机号或邮箱，由 {@link AccountIdentifier} 识别：
+     * 手机号走短信通道，邮箱走邮件通道——两条通道共用同一套验证码存储、
+     * 同一套频控与失败计数（键都是账号本身），所以登录时的 {@link #verify} 不用区分类型。
+     *
+     * <p>**为什么不拆成两个端点**：客户端只有一个输入框，拆端点等于让客户端先判断类型；
+     * 判断错就是一次无谓的失败请求，而且前后端两套判断规则迟早会不一致。
+     */
+    public SendSmsCodeResponse send(String rawAccount, String clientIp) {
+        AccountIdentifier identifier = AccountIdentifier.parse(rawAccount);
+        String account = identifier.value();
 
-        long phoneCount = store.incrementDailyCount("phone", phone, DAILY_WINDOW);
-        if (phoneCount > properties.getSmsDailyLimitPerPhone()) {
-            throw BizException.of(ErrorCode.SMS_SEND_TOO_FREQUENT, "该手机号今日验证码发送次数已达上限");
+        // 频控按账号类型分开计：手机号的短信配额不该被邮箱账号吃掉
+        String counterKind = identifier.isPhone() ? "phone" : "email";
+        long accountCount = store.incrementDailyCount(counterKind, account, DAILY_WINDOW);
+        if (accountCount > properties.getSmsDailyLimitPerPhone()) {
+            throw BizException.of(ErrorCode.SMS_SEND_TOO_FREQUENT,
+                    identifier.isPhone() ? "该手机号今日验证码发送次数已达上限" : "该邮箱今日验证码发送次数已达上限");
         }
         if (clientIp != null && !clientIp.isBlank()) {
             long ipCount = store.incrementDailyCount("ip", clientIp, DAILY_WINDOW);
@@ -57,24 +71,29 @@ public class VerificationCodeService {
             }
         }
 
-        if (!store.tryAcquireSendLock(phone, properties.getSmsSendInterval())) {
+        if (!store.tryAcquireSendLock(account, properties.getSmsSendInterval())) {
             throw BizException.of(ErrorCode.SMS_SEND_TOO_FREQUENT);
         }
 
         String code = String.format("%06d", random.nextInt(1_000_000));
-        store.saveCode(phone, code, properties.getSmsCodeTtl());
-        store.clearVerifyFailure(phone);
+        store.saveCode(account, code, properties.getSmsCodeTtl());
+        store.clearVerifyFailure(account);
 
         try {
-            smsSender.sendVerificationCode(phone, code);
+            if (identifier.isPhone()) {
+                smsSender.sendVerificationCode(account, code);
+            } else {
+                emailSender.sendVerificationCode(account, code);
+            }
         } catch (RuntimeException ex) {
             // 没发出去就别把用户锁在 60 秒频控里：清掉验证码与发送锁，让他立刻重试
-            store.deleteCode(phone);
-            store.releaseSendLock(phone);
-            log.warn("验证码短信发送失败 phone={} reason={}", maskPhone(phone), ex.getMessage());
+            store.deleteCode(account);
+            store.releaseSendLock(account);
+            log.warn("验证码发送失败 account={} reason={}", identifier.masked(), ex.getMessage());
             throw ex;
         }
-        log.info("已发送短信验证码 phone={}", maskPhone(phone));
+        log.info("已发送登录验证码 account={} channel={}",
+                identifier.masked(), identifier.isPhone() ? "sms" : "email");
 
         return new SendSmsCodeResponse(
                 properties.getSmsCodeTtl().toSeconds(),

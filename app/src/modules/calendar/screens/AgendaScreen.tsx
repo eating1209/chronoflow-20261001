@@ -24,13 +24,14 @@ import { MonthCalendar } from '../components/MonthCalendar';
 import { WheelDatePicker } from '../components/WheelDatePicker';
 import { ListGroup, ListRow, ListSeparator, SectionHeader } from '../../../shared/ui';
 import { Card, EmptyState, Pill, Screen } from '../../../shared/ui';
+import { useDebouncedSearch } from '../../../hooks/useDebouncedSearch';
 import { useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
 import { refreshLocalReminders } from '../../notifications';
 import { syncTaskToSystemCalendar } from '../systemCalendar';
 import {
   subscribeTaskBarChanges,
   syncTaskBarNotification,
-} from '../../tasks/taskBarNotification';
+} from '../../tasks/system';
 import {
   agendaDateKeys,
   agendaItemsForDay,
@@ -49,8 +50,6 @@ import {
   warmUpOcrEngine,
 } from '../../vision';
 
-/** 检索防抖：每敲一个字就发一次请求既费流量，也会让结果闪。 */
-const SEARCH_DEBOUNCE_MS = 300;
 
 /** 「上传图片」弹层滑上来的行程（足够把两张卡片完全推到屏幕外）。 */
 const SHEET_TRAVEL = 340;
@@ -149,9 +148,6 @@ export function AgendaScreen({
   const [error, setError] = useState<string | null>(null);
 
   const [keyword, setKeyword] = useState('');
-  const [results, setResults] = useState<SearchResultItem[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
   const [jumpOpen, setJumpOpen] = useState(false);
   /** 滚轮里的草稿日期：滚动过程不立刻跳，点「确定」才落到日历上 */
   const [jumpDraft, setJumpDraft] = useState(selectedDateKey);
@@ -282,41 +278,11 @@ export function AgendaScreen({
     }
   };
 
-  useEffect(() => {
-    const trimmed = keyword.trim();
-    if (!trimmed) {
-      setResults([]);
-      setSearchError(null);
-      setSearching(false);
-      return;
-    }
-    let cancelled = false;
-    setSearching(true);
-    const timer = setTimeout(() => {
-      void (async () => {
-        try {
-          const items = await api.search(trimmed);
-          if (!cancelled) {
-            setResults(items);
-            setSearchError(null);
-          }
-        } catch (cause) {
-          if (!cancelled) {
-            setResults([]);
-            setSearchError(userFacingError(cause, '检索失败'));
-          }
-        } finally {
-          if (!cancelled) {
-            setSearching(false);
-          }
-        }
-      })();
-    }, SEARCH_DEBOUNCE_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [api, keyword]);
+  const {
+    results,
+    searching,
+    error: searchError,
+  } = useDebouncedSearch({ keyword, search: api.search });
 
   const eventDates = useMemo(
     () => agendaDateKeys(occurrences, tasks, APP_TIMEZONE),

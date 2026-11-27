@@ -7,6 +7,7 @@
 export * from './domain/agenda';
 export * from './domain/calendar';
 export * from './domain/editorSelection';
+export * from './domain/editorTypes';
 export * from './domain/eventDraft';
 export * from './domain/holiday';
 export * from './domain/recurrence';

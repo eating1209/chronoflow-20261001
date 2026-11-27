@@ -138,8 +138,10 @@ public final class EventDateGuard {
         warn.accept("日期校验：文字说「" + weekdayCn(target) + "」，模型给的是 " + date
                 + "（" + weekdayCn(date.getDayOfWeek()) + "），已纠正为 "
                 + corrected.atZoneSameInstant(zone).toLocalDate() + "（标题：" + draft.title() + "）");
-        return new ParsedEventDraft(draft.title(), corrected.toString(), draft.timezone(),
-                draft.locationName(), draft.description());
+        // 只改日期，其余字段（含 kind）原样透传：
+        // 漏传 kind 会把「待办」悄悄变成日程，用户看到的类型就错了。
+        return new ParsedEventDraft(draft.title(), draft.kind(), corrected.toString(),
+                draft.timezone(), draft.locationName(), draft.description());
     }
 
     /** 离得最近的那一天（-3..+3）；同一天用 0 表示不需要动。 */

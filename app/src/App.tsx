@@ -4,12 +4,10 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createNavigationContainerRef } from '@react-navigation/native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  AppState,
-  Linking,
   Modal,
   Pressable,
   Text,
@@ -27,21 +25,19 @@ import {
 } from './context/AppContext';
 import { createRuntime } from './runtime';
 import { createSecureConsentStore, type ConsentStore } from './auth/consentStore';
+import type { AppStackParamList, MainTabsProps } from './navigation/types';
 import { withTimeout } from './shared/async';
+import { useSharedImageImport } from './hooks/useSharedImageImport';
+import { useDeepLinkRouting } from './hooks/useDeepLinkRouting';
+import { useOcrEngineRegistration } from './hooks/useOcrEngineRegistration';
+import { useReminderResync } from './hooks/useReminderResync';
+import { useTaskBar } from './hooks/useTaskBar';
+import { useEditorSelections } from './hooks/useEditorSelections';
 import { migrateLegacyStorage } from './shared/auth';
-import { askPermission } from './shared/permission';
 import {
-  DeviceRecognitionUnavailable,
   EventImportScreen,
-  consumeSharedImage,
-  discardSharedImage,
-  registerBundledOcrEngine,
-  recognizeScheduleImage,
-  subscribeSharedImages,
-  warmUpOcrEngine,
   type DraftEdit,
   type DraftEditTarget,
-  type RecognizedDraft,
 } from './modules/vision';
 import { VoiceInputScreen } from './modules/asr';
 import { LegalScreen, PrivacyConsentScreen } from './modules/compliance';
@@ -56,12 +52,10 @@ import {
   OrgRecipientPickerScreen,
   OrgTabScreen,
 } from './modules/org';
-import Constants from 'expo-constants';
 import {
   FeedbackScreen,
   SettingsScreen,
   SettingsSectionScreen,
-  type SettingsSectionKey,
 } from './modules/ops';
 import {
   AccountDeletionScreen,
@@ -73,45 +67,32 @@ import {
   PhoneChangeScreen,
   ProfileEditScreen,
   RealNameScreen,
+  BindPhoneScreen,
   RegisterScreen,
 } from './modules/identity';
 import {
   TaskEditorScreen,
   TasksScreen,
-  clearTaskBarNotification,
-  flushPendingTaskBarCompletions,
-  restoreTaskBarOverlay,
-  subscribeNativeTaskBarCompletion,
-  syncTaskBarNotification,
   taskDraftFromSwitch,
-  type TaskDraft,
 } from './modules/tasks';
 import {
   AgendaScreen,
   EventEditorScreen,
-  ensureSystemCalendarTaskBackfill,
   LocationPickerScreen,
   RecurrencePickerScreen,
   ReminderPickerScreen,
-  type PlaceSelection,
-  type ReminderSelection,
 } from './modules/calendar';
 import {
   APP_TIMEZONE,
   eventDraftFromSwitch,
   localDateKey,
-  type EventDraft,
-  type Recurrence,
 } from './modules/calendar/pure';
-import type { OrgEvent } from './shared/api';
 import {
   AppUpdateProvider,
   DEFAULT_REMINDER_SOUND,
   actionKindFor,
-  refreshLocalReminders,
   subscribeNotificationResponses,
   type NotificationRoute,
-  type ReminderSound,
 } from './modules/notifications';
 import { ToastHost } from './shared/ui';
 
@@ -127,6 +108,14 @@ type AuthStackParamList = {
   PasswordReset: undefined;
   /** 登录页要能点开《用户服务协议》《隐私政策》原文（规范 §四） */
   Legal: { doc: LegalDoc };
+  /**
+   * 邮箱注册后引导绑定手机号。
+   *
+   * 为什么放在 AuthStack（而不是登录后的 MainStack）：注册成功那一刻 session 已经写进存储，
+   * Root 会立刻切到 MainTabs，登录前这棵树就被卸载了。所以绑定必须在**注册页自己**推一个
+   * 同栈的页面上去，用户点「稍后绑定」或「绑定」后再离开——不能指望登录后再回来。
+   */
+  BindPhone: undefined;
 };
 
 const AuthStack = createNativeStackNavigator<AuthStackParamList>();
@@ -175,6 +164,8 @@ function AuthFlow() {
           <RegisterScreen
             onBack={() => navigation.goBack()}
             onOpenLegal={(doc) => navigation.navigate('Legal', { doc })}
+            // 邮箱注册：注册成功后进绑定手机号这一步（手机号注册则直接进 App）
+            onNeedBindPhone={() => navigation.navigate('BindPhone')}
           />
         )}
       </AuthStack.Screen>
@@ -183,36 +174,23 @@ function AuthFlow() {
           <LegalScreen doc={route.params.doc} onBack={() => navigation.goBack()} />
         )}
       </AuthStack.Screen>
+      {/*
+        邮箱注册后的绑定引导。两个出口都回 Login：
+        绑成功了要重新登录一次很正常（此时已有手机号，登录页填手机号即可）；
+        点「稍后绑定」也是回到入口，用户可以立刻用刚注册的邮箱登录。
+      */}
+      <AuthStack.Screen name="BindPhone">
+        {({ navigation }) => (
+          <BindPhoneScreen
+            onDone={() => navigation.reset({ index: 0, routes: [{ name: 'Login' }] })}
+            onSkip={() => navigation.reset({ index: 0, routes: [{ name: 'Login' }] })}
+          />
+        )}
+      </AuthStack.Screen>
     </AuthStack.Navigator>
   );
 }
 
-type MainTabsProps = {
-  onCreateEvent: (dateKey: string) => void;
-  onOpenEvent: (eventId: number, dateKey: string, occurrenceDate: string | null) => void;
-  onCreateTask: () => void;
-  onOpenTask: (taskId: number) => void;
-  onOpenOrgAccounts: () => void;
-  /** 图片识别出来一批日程草稿：进确认页让用户补日期 / 改标题，再一键添加（spec §4.1.9） */
-  onReviewDrafts: (drafts: RecognizedDraft[]) => void;
-  /** 语音输入：进「按住说话」页面（spec §4.1.9.1） */
-  onVoiceInput: () => void;
-  /** 组织管理员在手机上新建并下发组织日程（spec §4.2.2） */
-  onCreateOrgEvent: (dateKey: string) => void;
-  /** 编辑自己下发的组织日程（spec §4.2.2：只有发起人能改） */
-  onEditOrgEvent: (event: OrgEvent) => void;
-  onOpenOrgEvent: (identityId: number, dateKey: string) => void;
-  /** 改名字（昵称，spec §4.1.8）：昵称可改，服务端是 PATCH /me */
-  onOpenProfileEdit: () => void;
-  /** 打开「我的」里某一类设置的独立子页 */
-  onOpenSection: (section: SettingsSectionKey) => void;
-  /** 选好头像原图后进取景页（正方框 + 拖动缩放，spec §4.1.8） */
-  onOpenAvatarCrop: (uri: string) => void;
-  /** 取景页裁完回传的本地图片（version 变了才处理） */
-  avatarCrop: { version: number; uri: string | null };
-  /** 日程保存后让日历定位到对应日期；version 变了才处理 */
-  agendaFocus: { version: number; dateKey: string | null };
-};
 
 function MainTabs({
   onCreateEvent,
@@ -308,51 +286,6 @@ function MainTabs({
   );
 }
 
-type AppStackParamList = {
-  /** 深链 / 通知点进来时可以指定先落到哪个 tab（任务总览图标 → 待办） */
-  Main: { screen?: 'Agenda' | 'Tasks' | 'OrgEvents' | 'Settings' } | undefined;
-  /** 语音输入：按住说话 → 转写 → 解析成日程（spec §4.1.9.1） */
-  VoiceInput: undefined;
-  EventEditor: {
-    dateKey: string;
-    eventId?: number;
-    occurrenceDate?: string | null;
-    /** 从「待办」切回来时预填的新建草稿 */
-    initialDraft?: EventDraft;
-    initialReminderSound?: ReminderSound;
-  };
-  /** 图片识别出的日程草稿 → 确认页（补日期 / 改标题 / 一键添加，spec §4.1.9） */
-  EventImport: { drafts: RecognizedDraft[] };
-  /** 确认页里点开的某一条草稿 → 整页编辑器（草稿模式，改完回传、不落库） */
-  EventDraftEditor: { draft: EventDraft; dateKey: string };
-  /** 确认页里点开的待办草稿 → 待办编辑器（草稿模式，改完回传、不落库） */
-  TaskDraftEditor: { draft: TaskDraft };
-  TaskEditor: {
-    taskId?: number;
-    /** 从「日程」切过来时预填的新建草稿 */
-    initialDraft?: TaskDraft;
-    initialReminderSound?: ReminderSound;
-  };
-  OrgEventEditor: { dateKey: string; event?: OrgEvent };
-  OrgRecipientPicker: undefined;
-  LocationPicker: undefined;
-  RecurrencePicker: { startDateKey: string; initial: Recurrence };
-  ReminderPicker: { initial: { minutes: number[]; sound: ReminderSound } };
-  Feedback: undefined;
-  OrgAccounts: undefined;
-  /** 改名字（昵称）：二级页而不是弹窗，键盘与校验都在同一套页面结构里（spec §4.1.8） */
-  ProfileEdit: undefined;
-  SettingsSection: { section: SettingsSectionKey };
-  RealName: undefined;
-  EmailBind: undefined;
-  PhoneChange: undefined;
-  /** 「账号与安全」里设置 / 修改登录密码 */
-  Password: undefined;
-  /** 头像取景：正方框 + 拖动缩放，确认后按框裁成 1:1（spec §4.1.8） */
-  AvatarCrop: { uri: string };
-  Legal: { doc: LegalDoc };
-  AccountDeletion: undefined;
-};
 
 const AppStack = createNativeStackNavigator<AppStackParamList>();
 
@@ -363,7 +296,6 @@ const AppStack = createNativeStackNavigator<AppStackParamList>();
 const navigationRef = createNavigationContainerRef<AppStackParamList>();
 
 /** 回到前台时重排本地提醒的最小间隔：切来切去不该每次都打一次接口。 */
-const REMINDER_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
  * 登录后的导航：Tab（日历 / 待办 / 组织 / 我的）+ 若干独立编辑页。
@@ -375,17 +307,8 @@ const REMINDER_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
  * 因此由本组件持有，用 version 表达「又选了一次」。
  */
 function MainStack() {
-  const [placeSelection, setPlaceSelection] = useState<PlaceSelection>({ version: 0, place: null });
-  // 重复规则 / 提醒的回传，和其他二级页一样用 version 表达「又选了一次」
-  const [recurrenceSelection, setRecurrenceSelection] = useState<{
-    version: number;
-    recurrence: Recurrence | null;
-  }>({ version: 0, recurrence: null });
-  const [reminderSelection, setReminderSelection] = useState<ReminderSelection>({
-    version: 0,
-    minutes: [],
-    sound: DEFAULT_REMINDER_SOUND,
-  });
+  // 地点 / 重复 / 提醒三个二级页的回传状态，实现在 hooks/useEditorSelections.ts
+  const editorSelections = useEditorSelections(DEFAULT_REMINDER_SOUND);
   /** 头像取景页裁好的本地图片；version 表达「又裁了一张」，与其它二级页回传同一套语义 */
   const [avatarCrop, setAvatarCrop] = useState<{ version: number; uri: string | null }>({
     version: 0,
@@ -401,41 +324,11 @@ function MainStack() {
    * 任务总览通知卡左上角的时纪流图标：点它才打开 App，并直接落到「待办」。
    * 卡片其它区域不绑打开动作；这里只消费图标带过来的 chronoflow://tasks。
    */
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const openTasks = (url: string | null) => {
-      if (cancelled || !url || !url.startsWith('chronoflow://tasks')) {
-        return;
-      }
-      let attempts = 0;
-      const tryNavigate = () => {
-        if (cancelled) {
-          return;
-        }
-        if (navigationRef.isReady()) {
-          navigationRef.navigate('Main', { screen: 'Tasks' });
-          return;
-        }
-        if (attempts < 20) {
-          attempts += 1;
-          timer = setTimeout(tryNavigate, 150);
-        }
-      };
-      tryNavigate();
-    };
-    void Linking.getInitialURL()
-      .then(openTasks)
-      .catch(() => undefined);
-    const subscription = Linking.addEventListener('url', (event) => openTasks(event.url));
-    return () => {
-      cancelled = true;
-      if (timer) {
-        clearTimeout(timer);
-      }
-      subscription.remove();
-    };
-  }, []);
+  // 深链路由（chronoflow://tasks），实现在 hooks/useDeepLinkRouting.ts
+  useDeepLinkRouting({
+    isNavigationReady: () => navigationRef.isReady(),
+    openTasks: () => navigationRef.navigate('Main', { screen: 'Tasks' }),
+  });
   /**
    * 确认页点开某条草稿 → 编辑器保存后的回传。
    *
@@ -464,261 +357,28 @@ function MainStack() {
     setTaskBarEnabled,
   } = useAppSessionState();
   const { api, reminders } = useRuntime();
-  const calendarTaskBackfillStarted = useRef(false);
   const theme = useAppTheme();
-  const [shareRecognizing, setShareRecognizing] = useState(false);
-  const [pendingSharedDrafts, setPendingSharedDrafts] = useState<RecognizedDraft[] | null>(null);
-  const sharedImportBusyRef = useRef(false);
-
-  useEffect(() => {
-    if (calendarTaskBackfillStarted.current) {
-      return;
-    }
-    calendarTaskBackfillStarted.current = true;
-    void ensureSystemCalendarTaskBackfill(api);
-  }, [api]);
-
-  const importSharedImage = useCallback(async (uri: string) => {
-    if (sharedImportBusyRef.current) {
-      return;
-    }
-    sharedImportBusyRef.current = true;
-    setShareRecognizing(true);
-    try {
-      const result = await recognizeScheduleImage({ uri, api, today });
-      if (result.status === 'no-text') {
-        Alert.alert('没识别出文字', '这张截图里没有识别出可用的文字，换一张再试。');
-        return;
-      }
-      if (result.status === 'no-drafts') {
-        Alert.alert('没找到要做的事', '这张截图里没有找到要做的事。');
-        return;
-      }
-      setPendingSharedDrafts(result.drafts);
-    } catch (cause) {
-      if (cause instanceof DeviceRecognitionUnavailable) {
-        Alert.alert(
-          '端侧识别还没就绪',
-          `${cause.message}\n\n识别全程在手机本地完成，不会把图片上传到服务器。`,
-        );
-      } else {
-        Alert.alert('截图识别失败', '这张图没有识别成功，请稍后重试。');
-      }
-    } finally {
-      discardSharedImage(uri);
-      sharedImportBusyRef.current = false;
-      setShareRecognizing(false);
-    }
-  }, [api, today]);
-
-  const consumeSharedImageIfAny = useCallback(async () => {
-    if (sharedImportBusyRef.current) {
-      return;
-    }
-    try {
-      const shared = await consumeSharedImage();
-      if (!shared) {
-        return;
-      }
-      if (shared.error) {
-        Alert.alert('截图导入失败', shared.error);
-        return;
-      }
-      if (shared.uri) {
-        await importSharedImage(shared.uri);
-      }
-    } catch {
-      Alert.alert('截图导入失败', '没有读到这张图片，请重新分享一次。');
-    }
-  }, [importSharedImage]);
-
-  /** 系统分享图片进来：冷启动主动取一次，运行中由原生事件 / 回前台再取。 */
-  useEffect(() => {
-    let cancelled = false;
-    const consume = () => {
-      if (!cancelled) {
-        void consumeSharedImageIfAny();
-      }
-    };
-    consume();
-    const offShare = subscribeSharedImages(consume);
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        consume();
-      }
-    });
-    return () => {
-      cancelled = true;
-      offShare();
-      subscription.remove();
-    };
-  }, [consumeSharedImageIfAny]);
-
-  /** 识别出草稿后再跳确认页：首次启动时导航树可能还没 ready，最多等 3 秒。 */
-  useEffect(() => {
-    if (!pendingSharedDrafts) {
-      return;
-    }
-    let cancelled = false;
-    let attempts = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const open = () => {
-      if (cancelled) {
-        return;
-      }
-      if (navigationRef.isReady()) {
-        navigationRef.navigate('EventImport', { drafts: pendingSharedDrafts });
-        setPendingSharedDrafts(null);
-        return;
-      }
-      if (attempts < 20) {
-        attempts += 1;
-        timer = setTimeout(open, 150);
-      }
-    };
-    open();
-    return () => {
-      cancelled = true;
-      if (timer) {
-        clearTimeout(timer);
-      }
-    };
-  }, [pendingSharedDrafts]);
-
   /**
-   * 注册端侧 OCR 引擎（spec §4.1.9）。
+   * 系统分享图片进来 → 端侧识别 → 跳确认页。
    *
-   * <p>「上传图片 → 识别日程」的第一段是手机本地的 OCR（图片不出手机），它是原生模块：
-   * 这里只注册一个**代理**，实现要等第一次真的识别时才加载（启动路径上不碰原生模块，
-   * 免得原生库有问题就让整个 App 打不开）。**Expo Go 里拿不到模块**时，
-   * 界面会如实说「端侧识别需要开发版构建」，而不是静默失败或偷偷改成上传图片到服务器。
-   * 第二段（文字 → 日程草稿）在服务端做。
+   * 具体实现在 hooks/useSharedImageImport.ts：冷启动主动取一次、回前台再取一次、
+   * 导航未就绪时最多等 3 秒——这三件事都在那边，这里只接「识别好之后去哪」。
    */
-  useEffect(() => {
-    registerBundledOcrEngine();
-    /*
-     * 端侧 OCR 自检开关（**默认关**，出包时用环境变量打开）：
-     *
-     *   EXPO_PUBLIC_OCR_SELF_TEST=1 bash scripts/build_apk.sh --release ...
-     *
-     * 打开后启动就把引擎（下载模型 + 建 ONNX session）跑一遍并打日志——OCR 那条链路在
-     * 「登录后的日历页」，而真机上的问题（例如点上传图片闪退）恰恰只在这条链路上出现，
-     * 模拟器上又没法登录，所以需要一个不依赖登录的复现入口。
-     */
-    if (process.env.EXPO_PUBLIC_OCR_SELF_TEST === '1' || Constants.expoConfig?.extra?.ocrSelfTest === true) {
-      void warmUpOcrEngine().then(
-        () => console.log('[vision] OCR 自检：引擎加载流程结束'),
-        (cause) => console.log(`[vision] OCR 自检异常：${String(cause)}`),
-      );
-    }
-  }, []);
+  const { recognizing: shareRecognizing } = useSharedImageImport({
+    api,
+    today,
+    isNavigationReady: () => navigationRef.isReady(),
+    onDraftsReady: (drafts) => navigationRef.navigate('EventImport', { drafts }),
+  });
 
-  /**
-   * 本机提醒的定期重排（spec §4.5）。
-   *
-   * 只排一次不够：重复日程只排得出最近的若干次、别的设备改了提醒、用户把通知开关关掉
-   * —— 这些都不会体现在本机的排期里。冷启动 + 回到前台各对齐一次，把差异收掉。
-   */
-  useEffect(() => {
-    let lastRun = 0;
-    const run = (force: boolean) => {
-      const now = Date.now();
-      if (!force && now - lastRun < REMINDER_RESYNC_INTERVAL_MS) {
-        return;
-      }
-      lastRun = now;
-      void refreshLocalReminders({ api, scheduler: reminders, enabled: notificationEnabled });
-    };
-    run(true);
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        run(false);
-      }
-    });
-    return () => subscription.remove();
-  }, [api, reminders, notificationEnabled]);
+  // 注册端侧 OCR 引擎（含自检开关），实现在 hooks/useOcrEngineRegistration.ts
+  useOcrEngineRegistration();
 
-  /**
-   * 通知栏 / 锁屏常驻任务总览。
-   *
-   * 首次启动先用自己的文案说明用途，再申请系统通知权限；用户拒绝就如实关掉开关，
-   * 不反复弹窗。之后冷启动、回到前台、以及任务页/日历页完成任务时都会同步内容。
-   * 通知本身是普通持续通知；顶部小条只有用户单独授权并开启后才恢复。
-   */
-  useEffect(() => {
-    let cancelled = false;
-    let lastRun = 0;
-    if (!taskBarEnabled) {
-      void clearTaskBarNotification();
-      return () => {
-        cancelled = true;
-      };
-    }
+  // 本机提醒的定期重排（冷启动 + 回前台），实现在 hooks/useReminderResync.ts
+  useReminderResync({ api, scheduler: reminders, enabled: notificationEnabled });
 
-    const refresh = async (requestPermission: boolean) => {
-      if (cancelled) {
-        return;
-      }
-      const granted = await askPermission(
-        'notification',
-        requestPermission ? {} : { quiet: true },
-      );
-      if (cancelled) {
-        return;
-      }
-      if (!granted) {
-        if (requestPermission) {
-          setTaskBarEnabled(false);
-        }
-        await clearTaskBarNotification();
-        return;
-      }
-      await syncTaskBarNotification({ api, enabled: true });
-      await restoreTaskBarOverlay();
-    };
-
-    lastRun = Date.now();
-    void refresh(true);
-    const subscription = AppState.addEventListener('change', (state) => {
-      const now = Date.now();
-      if (state === 'active' && now - lastRun >= REMINDER_RESYNC_INTERVAL_MS) {
-        lastRun = now;
-        void refresh(false);
-      }
-    });
-    return () => {
-      cancelled = true;
-      subscription.remove();
-      // 注意：这里**不能**清通知。App 被从最近任务划掉、Activity 销毁时也会走到
-      // 这个 cleanup；清了就会出现「划掉后台，任务条变 0 项、通知卡消失」。
-      // 真正的退出登录在 AppContext.signOut 里清理，隐私不会留在锁屏上。
-    };
-  }, [api, setTaskBarEnabled, taskBarEnabled]);
-
-  /**
-   * 锁屏 / 通知栏里点掉的条目先记在原生本地队列里；App 启动和回到前台时补同步服务端。
-   * 成功的条目会触发页面重新拉取，失败的留到下一次，不会出现「锁屏勾了、App 里还在」。
-   */
-  useEffect(() => {
-    let cancelled = false;
-    const flush = () => {
-      if (!cancelled) {
-        void flushPendingTaskBarCompletions(api);
-      }
-    };
-    flush();
-    const offNative = subscribeNativeTaskBarCompletion(flush);
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        flush();
-      }
-    });
-    return () => {
-      cancelled = true;
-      offNative();
-      subscription.remove();
-    };
-  }, [api]);
+  // 通知栏 / 锁屏常驻任务总览 + 锁屏勾选补同步，实现在 hooks/useTaskBar.ts
+  useTaskBar({ api, enabled: taskBarEnabled, setEnabled: setTaskBarEnabled });
 
   /**
    * 点通知进 App：跳到对应的编辑页（spec §4.5）。
@@ -790,18 +450,14 @@ function MainStack() {
     }
     if (pendingRoute.kind === 'EVENT') {
       // 与从列表进编辑页一样：先清掉二级页的回传，避免上一条日程的选择串进来
-      setPlaceSelection({ version: 0, place: null });
-      setRecurrenceSelection({ version: 0, recurrence: null });
-      setReminderSelection({ version: 0, minutes: [], sound: DEFAULT_REMINDER_SOUND });
+              editorSelections.reset();
       navigationRef.navigate('EventEditor', {
         dateKey: pendingRoute.occurrenceDate ?? today,
         eventId: pendingRoute.eventId,
         occurrenceDate: pendingRoute.occurrenceDate,
       });
     } else {
-      setPlaceSelection({ version: 0, place: null });
-      setRecurrenceSelection({ version: 0, recurrence: null });
-      setReminderSelection({ version: 0, minutes: [], sound: DEFAULT_REMINDER_SOUND });
+              editorSelections.reset();
       navigationRef.navigate('TaskEditor', { taskId: pendingRoute.taskId });
     }
     setPendingRoute(null);
@@ -815,30 +471,20 @@ function MainStack() {
           <MainTabs
             onCreateEvent={(dateKey) => {
               // 每次从列表进编辑页都重置二级页的回传，避免上一次的选择串到下一次
-              setPlaceSelection({ version: 0, place: null });
-              setRecurrenceSelection({ version: 0, recurrence: null });
-              setReminderSelection({ version: 0, minutes: [], sound: DEFAULT_REMINDER_SOUND });
+              editorSelections.reset();
               navigation.navigate('EventEditor', { dateKey });
             }}
             onOpenEvent={(eventId, dateKey, occurrenceDate) => {
               // 编辑已有日程同样要重置地点；否则会把上一次「新建」时选的地点带进来
-              setPlaceSelection({ version: 0, place: null });
-              // 重复 / 提醒也一样：编辑页自己会把已有值拉回来预填
-              setRecurrenceSelection({ version: 0, recurrence: null });
-              setReminderSelection({ version: 0, minutes: [], sound: DEFAULT_REMINDER_SOUND });
+              editorSelections.reset();
               navigation.navigate('EventEditor', { dateKey, eventId, occurrenceDate });
             }}
             onCreateTask={() => {
-              setPlaceSelection({ version: 0, place: null });
-              // 待办编辑页也复用「重复 / 提醒」两个二级页，同样要重置回传
-              setRecurrenceSelection({ version: 0, recurrence: null });
-              setReminderSelection({ version: 0, minutes: [], sound: DEFAULT_REMINDER_SOUND });
+              editorSelections.reset();
               navigation.navigate('TaskEditor');
             }}
             onOpenTask={(taskId) => {
-              setPlaceSelection({ version: 0, place: null });
-              setRecurrenceSelection({ version: 0, recurrence: null });
-              setReminderSelection({ version: 0, minutes: [], sound: DEFAULT_REMINDER_SOUND });
+              editorSelections.reset();
               navigation.navigate('TaskEditor', { taskId });
             }}
             onReviewDrafts={(drafts) => navigation.navigate('EventImport', { drafts })}
@@ -891,9 +537,9 @@ function MainStack() {
             initialDraft={route.params.initialDraft}
             initialReminderSound={route.params.initialReminderSound}
             showKindSwitch={route.params.eventId === undefined && route.params.occurrenceDate == null}
-            placeSelection={placeSelection}
-            recurrenceSelection={recurrenceSelection}
-            reminderSelection={reminderSelection}
+            placeSelection={editorSelections.place}
+            recurrenceSelection={editorSelections.recurrence}
+            reminderSelection={editorSelections.reminder}
             onPickLocation={() => {
               navigation.navigate('LocationPicker');
             }}
@@ -903,9 +549,7 @@ function MainStack() {
             }
             onPickReminder={(current) => navigation.navigate('ReminderPicker', { initial: current })}
             onSwitchToTask={(snapshot) => {
-              setPlaceSelection({ version: 0, place: null });
-              setRecurrenceSelection({ version: 0, recurrence: null });
-              setReminderSelection({ version: 0, minutes: [], sound: DEFAULT_REMINDER_SOUND });
+              editorSelections.reset();
               navigation.replace('TaskEditor', {
                 initialDraft: taskDraftFromSwitch(snapshot),
                 initialReminderSound: snapshot.reminderSound,
@@ -933,17 +577,6 @@ function MainStack() {
         )}
       </AppStack.Screen>
 
-      {/* 语音输入：按住说话 → 转写 → 解析 → 与拍照识别共用的确认页（spec §4.1.9.1） */}
-      <AppStack.Screen name="VoiceInput">
-        {({ navigation }) => (
-          <VoiceInputScreen
-            onCancel={() => navigation.goBack()}
-            // replace：从确认页返回时回到日历，而不是又回到录音页
-            onReviewDrafts={(drafts) => navigation.replace('EventImport', { drafts })}
-          />
-        )}
-      </AppStack.Screen>
-
       <AppStack.Screen name="EventImport">
         {({ navigation, route }) => (
           <EventImportScreen
@@ -951,9 +584,7 @@ function MainStack() {
             draftEdit={draftEdit}
             onEditDraft={(key, target: DraftEditTarget) => {
               // 进草稿编辑器前清掉二级页的回传，避免上一次选的地点 / 重复 / 提醒串进来
-              setPlaceSelection({ version: 0, place: null });
-              setRecurrenceSelection({ version: 0, recurrence: null });
-              setReminderSelection({ version: 0, minutes: [], sound: DEFAULT_REMINDER_SOUND });
+              editorSelections.reset();
               setEditingImportKey(key);
               if (target.kind === 'EVENT') {
                 navigation.navigate('EventDraftEditor', {
@@ -977,9 +608,9 @@ function MainStack() {
             // 草稿模式：用识别出来的草稿起步，保存只回传给确认页，不写服务端
             dateKey={route.params.dateKey}
             initialDraft={route.params.draft}
-            placeSelection={placeSelection}
-            recurrenceSelection={recurrenceSelection}
-            reminderSelection={reminderSelection}
+            placeSelection={editorSelections.place}
+            recurrenceSelection={editorSelections.recurrence}
+            reminderSelection={editorSelections.reminder}
             onPickLocation={() => navigation.navigate('LocationPicker')}
             onPickRecurrence={(current, startDateKey) =>
               navigation.navigate('RecurrencePicker', { startDateKey, initial: current })
@@ -1007,9 +638,9 @@ function MainStack() {
             todayKey={today}
             initialDraft={route.params.draft}
             showKindSwitch={false}
-            placeSelection={placeSelection}
-            recurrenceSelection={recurrenceSelection}
-            reminderSelection={reminderSelection}
+            placeSelection={editorSelections.place}
+            recurrenceSelection={editorSelections.recurrence}
+            reminderSelection={editorSelections.reminder}
             onPickLocation={() => navigation.navigate('LocationPicker')}
             onPickRecurrence={(current, startDateKey) =>
               navigation.navigate('RecurrencePicker', { startDateKey, initial: current })
@@ -1038,18 +669,16 @@ function MainStack() {
             initialDraft={route.params?.initialDraft}
             initialReminderSound={route.params?.initialReminderSound}
             showKindSwitch={route.params?.taskId === undefined}
-            placeSelection={placeSelection}
-            recurrenceSelection={recurrenceSelection}
-            reminderSelection={reminderSelection}
+            placeSelection={editorSelections.place}
+            recurrenceSelection={editorSelections.recurrence}
+            reminderSelection={editorSelections.reminder}
             onPickLocation={() => navigation.navigate('LocationPicker')}
             onPickRecurrence={(current, startDateKey) =>
               navigation.navigate('RecurrencePicker', { startDateKey, initial: current })
             }
             onPickReminder={(current) => navigation.navigate('ReminderPicker', { initial: current })}
             onSwitchToEvent={(snapshot) => {
-              setPlaceSelection({ version: 0, place: null });
-              setRecurrenceSelection({ version: 0, recurrence: null });
-              setReminderSelection({ version: 0, minutes: [], sound: DEFAULT_REMINDER_SOUND });
+              editorSelections.reset();
               navigation.replace('EventEditor', {
                 dateKey: snapshot.hasDue ? snapshot.dateKey : today,
                 initialDraft: eventDraftFromSwitch(snapshot),
@@ -1095,11 +724,11 @@ function MainStack() {
       <AppStack.Screen name="LocationPicker">
         {({ navigation }) => (
           <LocationPickerScreen
-            initialLatitude={placeSelection.place?.latitude ?? null}
-            initialLongitude={placeSelection.place?.longitude ?? null}
+            initialLatitude={editorSelections.place.place?.latitude ?? null}
+            initialLongitude={editorSelections.place.place?.longitude ?? null}
             onCancel={() => navigation.goBack()}
             onPick={(place) => {
-              setPlaceSelection((current) => ({ version: current.version + 1, place }));
+              editorSelections.setPlace((current) => ({ version: current.version + 1, place }));
               navigation.goBack();
             }}
           />
@@ -1114,7 +743,7 @@ function MainStack() {
             initial={route.params.initial}
             onCancel={() => navigation.goBack()}
             onConfirm={(recurrence) => {
-              setRecurrenceSelection((current) => ({ version: current.version + 1, recurrence }));
+              editorSelections.setRecurrence((current) => ({ version: current.version + 1, recurrence }));
               navigation.goBack();
             }}
           />
@@ -1127,7 +756,7 @@ function MainStack() {
             initial={route.params.initial}
             onCancel={() => navigation.goBack()}
             onConfirm={(value) => {
-              setReminderSelection((current) => ({
+              editorSelections.setReminder((current) => ({
                 version: current.version + 1,
                 minutes: value.minutes,
                 sound: value.sound,

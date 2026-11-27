@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { userFacingError } from '../../../shared/errors';
 import {
   InputAccessoryView,
@@ -15,10 +16,15 @@ import {
 
 import { ApiError } from '../../../shared/api';
 import type { TokenResponse } from '../../../shared/api';
-import { SegmentedControl } from '../../../shared/ui';
-import { Card, Checkbox, PrimaryButton, Screen } from '../../../shared/ui';
+import { PrimaryButton, Screen } from '../../../shared/ui';
 import { useAppSessionState, useAppTheme, useRuntime } from '../../../context/AppContext';
 import { canRequestCode, canSubmitLogin, LEGAL_DOCS, type LegalDoc } from '../../compliance/pure';
+import {
+  accountKind,
+  accountIssue,
+  accountPlaceholder,
+  keyboardFor,
+} from '../../../shared/accountIdentifier';
 import { loginButtons } from '../domain/loginForm';
 import {
   canSubmitPasswordLogin,
@@ -61,7 +67,7 @@ export function LoginScreen({
   const { api, deviceId } = useRuntime();
   const { applyTokenResponse } = useAppSessionState();
 
-  const [phone, setPhone] = useState('');
+  const [account, setAccount] = useState('');
   const [code, setCode] = useState('');
   /** 登录方式：短信验证码（默认）/ 手机号 + 密码 */
   const [mode, setMode] = useState<LoginMode>('sms');
@@ -102,7 +108,7 @@ export function LoginScreen({
     setSendingCode(true);
     setError(null);
     try {
-      const result = await api.sendSmsCode(phone.trim());
+      const result = await api.sendSmsCode(account.trim());
       /**
        * 开发环境后端会回显验证码，生产环境该字段不存在。
        *
@@ -125,10 +131,17 @@ export function LoginScreen({
   };
 
   const submit = async () => {
+    // 前端先做一次格式校验：邮箱写了一半就点登录，直接给「邮箱格式不正确」
+    // 比等服务端 400 再回显更快，也不用真发一次请求
+    const issue = accountIssue(account);
+    if (issue) {
+      setError(issue);
+      return;
+    }
     const ready =
       mode === 'sms'
-        ? canSubmitLogin({ phone, code, acceptedPolicy })
-        : canSubmitPasswordLogin({ phone, password, acceptedPolicy });
+        ? canSubmitLogin({ account, code, acceptedPolicy })
+        : canSubmitPasswordLogin({ account, password, acceptedPolicy });
     if (!ready) {
       setError(
         acceptedPolicy
@@ -144,14 +157,14 @@ export function LoginScreen({
     try {
       const result =
         mode === 'sms'
-          ? await api.loginBySms(phone.trim(), code.trim(), deviceId)
-          : await api.loginByPassword(phone.trim(), password, deviceId);
+          ? await api.loginBySms(account.trim(), code.trim(), deviceId)
+          : await api.loginByPassword(account.trim(), password, deviceId);
 
       if (result.needRegister && result.registerToken) {
         // 首次登录：账号已建，直接创建个人身份进入；昵称可在设置里改
         const token = await api.createPersonalIdentity(
           result.registerToken,
-          `用户${phone.trim().slice(-4)}`,
+          `用户${account.trim().slice(-4)}`,
           deviceId,
         );
         await applyToken(token);
@@ -172,12 +185,12 @@ export function LoginScreen({
 
   const loginReady =
     mode === 'sms'
-      ? canSubmitLogin({ phone, code, acceptedPolicy })
-      : canSubmitPasswordLogin({ phone, password, acceptedPolicy });
+      ? canSubmitLogin({ account, code, acceptedPolicy })
+      : canSubmitPasswordLogin({ account, password, acceptedPolicy });
   const buttons = loginButtons({
     sendingCode,
     submitting,
-    canRequestCode: canRequestCode(phone, cooldown, acceptedPolicy),
+    canRequestCode: canRequestCode(account, cooldown, acceptedPolicy),
     canSubmitLogin: loginReady,
   });
 
@@ -185,7 +198,7 @@ export function LoginScreen({
    * 手机号填满了、但协议还没勾：按钮是灰的，必须说明原因。
    * 否则用户（和审核员）只会觉得 App 卡住了——这正是之前被卡住的那一步。
    */
-  const needsConsent = !acceptedPolicy && phone.trim().length === 11;
+  const needsConsent = !acceptedPolicy && account.trim().length === 11;
 
   return (
     <KeyboardAvoidingView
@@ -200,80 +213,112 @@ export function LoginScreen({
           automaticallyAdjustKeyboardInsets
           showsVerticalScrollIndicator={false}
         >
-      <View style={{ marginBottom: theme.spacing.lg }}>
-        <Text style={[styles.title, { color: theme.color.textPrimary }]}>时纪流</Text>
-        <Text style={{ color: theme.color.textSecondary }}>ChronoFlow</Text>
-      </View>
+          {/*
+            微信式布局（spec 视觉规范「黑白极简」不变，只改排布）：
+            顶部大片留白 → 品牌区 → 无边框的横线输入行 → 通栏按钮 → 底部协议。
+            与原来的差别：不用卡片包裹、输入框不再是独立方框，而是「标签 + 输入」的一行。
+          */}
+          <View style={styles.brand}>
+            <Text style={[styles.title, { color: theme.color.textPrimary }]}>时纪流</Text>
+          </View>
 
-      <Card>
-        <View style={{ marginBottom: theme.spacing.lg }}>
-          <SegmentedControl<LoginMode>
-            label="登录方式"
-            options={[
+          {/* 登录方式：微信式下用居中的两个文字切换，不用带边框的分段控件 */}
+          <View style={styles.modeRow}>
+            {([
               { value: 'sms', label: '验证码登录' },
               { value: 'password', label: '密码登录' },
-            ]}
-            value={mode}
-            onChange={(next) => {
-              setMode(next);
-              setError(null);
-            }}
-          />
-        </View>
+            ] as { value: LoginMode; label: string }[]).map((item) => {
+              const active = mode === item.value;
+              return (
+                <Pressable
+                  key={item.value}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  onPress={() => {
+                    setMode(item.value);
+                    setError(null);
+                  }}
+                  hitSlop={8}
+                  style={styles.modeItem}
+                >
+                  <Text
+                    style={[
+                      styles.modeText,
+                      {
+                        color: active ? theme.color.textPrimary : theme.color.textTertiary,
+                        fontWeight: active ? '600' : '400',
+                      },
+                    ]}
+                  >
+                    {item.label}
+                  </Text>
+                  <View
+                    style={[
+                      styles.modeUnderline,
+                      { backgroundColor: active ? theme.color.accent : 'transparent' },
+                    ]}
+                  />
+                </Pressable>
+              );
+            })}
+          </View>
 
-        <Text style={[styles.label, { color: theme.color.textSecondary }]}>手机号</Text>
-        <TextInput
-          value={phone}
-          onChangeText={setPhone}
-          keyboardType="phone-pad"
-          inputAccessoryViewID={Platform.OS === 'ios' ? KEYBOARD_ACCESSORY_ID : undefined}
-          placeholder="11 位手机号"
-          accessibilityLabel="手机号"
-          placeholderTextColor={theme.color.textTertiary}
-            underlineColorAndroid="transparent"
-          style={[
-            styles.input,
-            { color: theme.color.textPrimary, borderColor: theme.color.border, borderRadius: theme.radius.input },
-          ]}
-        />
+          {/* 手机号：一行，标签在左、输入在右，底部一条细线 */}
+          <View style={[styles.field, { borderBottomColor: theme.color.border }]}>
+            <Text style={[styles.fieldLabel, { color: theme.color.textPrimary }]}>账号</Text>
+            <TextInput
+              value={account}
+              onChangeText={setAccount}
+              keyboardType={keyboardFor(accountKind(account))}
+              inputAccessoryViewID={Platform.OS === 'ios' ? KEYBOARD_ACCESSORY_ID : undefined}
+              placeholder={accountPlaceholder(account)}
+              accessibilityLabel="手机号"
+              placeholderTextColor={theme.color.textTertiary}
+              underlineColorAndroid="transparent"
+              maxLength={11}
+              style={[styles.fieldInput, { color: theme.color.textPrimary }]}
+            />
+          </View>
 
-        <View style={{ height: theme.spacing.md }} />
-
-        {mode === 'sms' ? (
-          <>
-            <Text style={[styles.label, { color: theme.color.textSecondary }]}>验证码</Text>
-            <View style={styles.codeRow}>
+          {mode === 'sms' ? (
+            <View style={[styles.field, { borderBottomColor: theme.color.border }]}>
+              <Text style={[styles.fieldLabel, { color: theme.color.textPrimary }]}>验证码</Text>
               <TextInput
                 value={code}
                 onChangeText={setCode}
                 keyboardType="number-pad"
                 inputAccessoryViewID={Platform.OS === 'ios' ? KEYBOARD_ACCESSORY_ID : undefined}
                 maxLength={6}
-                placeholder="6 位数字"
+                placeholder="请输入验证码"
                 accessibilityLabel="验证码"
                 placeholderTextColor={theme.color.textTertiary}
-            underlineColorAndroid="transparent"
-                style={[
-                  styles.input,
-                  styles.codeInput,
-                  { color: theme.color.textPrimary, borderColor: theme.color.border, borderRadius: theme.radius.input },
-                ]}
+                underlineColorAndroid="transparent"
+                style={[styles.fieldInput, { color: theme.color.textPrimary }]}
               />
-              <View style={styles.codeButton}>
-                <PrimaryButton
-                  title={sendCodeLabel(cooldown, buttons.sendCode.loading)}
-                  onPress={() => void sendCode()}
-                  loading={buttons.sendCode.loading}
-                  // 冷却中 / 另一个请求在飞时也禁用：点不动比点了报错更省事
-                  disabled={buttons.sendCode.disabled}
-                />
-              </View>
+              {/* 微信式的「获取验证码」是行内文字按钮，不是独立方块按钮 */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ disabled: buttons.sendCode.disabled }}
+                disabled={buttons.sendCode.disabled}
+                hitSlop={8}
+                onPress={() => void sendCode()}
+                style={styles.codeAction}
+              >
+                <Text
+                  style={{
+                    color: buttons.sendCode.disabled
+                      ? theme.color.textTertiary
+                      : theme.color.accent,
+                    fontSize: 15,
+                  }}
+                >
+                  {sendCodeLabel(cooldown, buttons.sendCode.loading)}
+                </Text>
+              </Pressable>
             </View>
-          </>
-        ) : (
-          <>
-            <Text style={[styles.label, { color: theme.color.textSecondary }]}>密码</Text>
-            <View style={[styles.inputBox, { borderColor: theme.color.border, borderRadius: theme.radius.input }]}>
+          ) : (
+            <View style={[styles.field, { borderBottomColor: theme.color.border }]}>
+              <Text style={[styles.fieldLabel, { color: theme.color.textPrimary }]}>密码</Text>
               <TextInput
                 value={password}
                 onChangeText={setPassword}
@@ -283,91 +328,133 @@ export function LoginScreen({
                 autoComplete="off"
                 importantForAutofill="no"
                 inputAccessoryViewID={Platform.OS === 'ios' ? KEYBOARD_ACCESSORY_ID : undefined}
-                placeholder="设置过的登录密码"
+                placeholder="请输入登录密码"
                 accessibilityLabel="密码"
                 placeholderTextColor={theme.color.textTertiary}
                 underlineColorAndroid="transparent"
-                style={[styles.inputInner, { color: theme.color.textPrimary }]}
+                style={[styles.fieldInput, { color: theme.color.textPrimary }]}
               />
             </View>
+          )}
+
+          {/* 密码模式下的辅助入口：右对齐的小字链接，与微信「找回密码」同位 */}
+          {mode === 'password' ? (
             <View style={styles.helperRow}>
-              <Text
-                onPress={onOpenRegister}
-                accessibilityRole="button"
-                style={{ color: theme.color.accent, fontSize: 13 }}
+              <Pressable onPress={onOpenRegister} hitSlop={6} accessibilityRole="button">
+                <Text style={{ color: theme.color.accent, fontSize: 14 }}>注册账号</Text>
+              </Pressable>
+              <Pressable onPress={onOpenPasswordReset} hitSlop={6} accessibilityRole="button">
+                <Text style={{ color: theme.color.textSecondary, fontSize: 14 }}>找回密码</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
+          {error ? (
+            <Text style={{ color: theme.color.danger, fontSize: 14, marginTop: theme.spacing.md }}>
+              {error}
+            </Text>
+          ) : null}
+
+          {needsConsent ? (
+            <Text
+              style={{ color: theme.color.textTertiary, fontSize: 13, marginTop: theme.spacing.sm }}
+            >
+              请先勾选下方的协议，才能获取验证码并登录
+            </Text>
+          ) : null}
+
+          {/*
+            通栏主按钮：微信的登录按钮是「接近矩形、圆角 8」的通栏块。
+            这里沿用 PrimaryButton（颜色/禁用态已合规），只把外边距按微信的节奏给足。
+          */}
+          <View style={styles.submitWrap}>
+            {/*
+              微信的登录按钮是「接近矩形、圆角 8」的通栏块。
+              PrimaryButton 默认圆角 12（与日程卡片的按钮一致），这里只把圆角收小，
+              颜色 / 禁用态 / loading 全部沿用组件实现——不要为了形状重写一个按钮。
+            */}
+            <View style={{ borderRadius: 8, overflow: 'hidden' }}>
+              <PrimaryButton
+                title="登录"
+                onPress={() => void submit()}
+                loading={buttons.submit.loading}
+                disabled={buttons.submit.disabled}
+              />
+            </View>
+          </View>
+
+          {/*
+            合规要点（规范 §四「默认同意」）——顺序与样式可以跟着微信走，但这三条不能动：
+            1. 用**勾选框**、且默认不勾选；
+            2. 协议名要能点开原文；
+            3. 未勾选时登录按钮不可点。
+            微信把协议放在最底部居中，这里照做：先勾选框，再换行显示协议链接。
+          */}
+          {/*
+            协议区（微信式排布）：勾选框在左，**两段文字同处一列**。
+            之前的问题：把第二段单独用 paddingLeft 手动对齐，和上面文字起点差几个像素，
+            且勾选框只对齐第一行，换行后就显得错位。现在交给同一个容器统一排版。
+
+            合规要点（规范 §四「默认同意」）不能动：
+            1. 用勾选框、且默认不勾选；2. 协议名可点开原文；3. 未勾选时登录按钮不可点。
+          */}
+          <View style={styles.consent}>
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: acceptedPolicy }}
+              accessibilityLabel="我已阅读并同意用户服务协议与隐私政策"
+              onPress={() => setAcceptedPolicy(!acceptedPolicy)}
+              hitSlop={8}
+              style={styles.consentCheckbox}
+            >
+              <View
+                style={[
+                  styles.consentBox,
+                  {
+                    borderColor: acceptedPolicy ? theme.color.accent : theme.color.border,
+                    backgroundColor: acceptedPolicy ? theme.color.accent : 'transparent',
+                  },
+                ]}
               >
-                还没有账号？立即注册
+                {acceptedPolicy ? (
+                  <Ionicons
+                    name="checkmark"
+                    size={12}
+                    color={theme.color.accentContrast}
+                  />
+                ) : null}
+              </View>
+            </Pressable>
+
+            <View style={styles.consentText}>
+              <Text style={[styles.consentLine, { color: theme.color.textTertiary }]}>
+                {/* 用 title（短名）而不是 label：《时纪流用户服务协议》会把一行撑成两行 */}
+                我已阅读并同意
+                <Text
+                  onPress={() => onOpenLegal('user-agreement')}
+                  style={{ color: theme.color.accent }}
+                >
+                  《{LEGAL_DOCS['user-agreement'].title}》
+                </Text>
+                与
+                <Text
+                  onPress={() => onOpenLegal('privacy-policy')}
+                  style={{ color: theme.color.accent }}
+                >
+                  《{LEGAL_DOCS['privacy-policy'].title}》
+                </Text>
               </Text>
-              <Text
-                onPress={onOpenPasswordReset}
-                accessibilityRole="button"
-                style={{ color: theme.color.accent, fontSize: 13 }}
-              >
-                忘记密码？
+              <Text style={[styles.consentLine, styles.consentHint, { color: theme.color.textTertiary }]}>
+                未满 18 周岁请在监护人陪同下阅读
+                <Text
+                  onPress={() => onOpenLegal('children-privacy')}
+                  style={{ color: theme.color.accent }}
+                >
+                  《{LEGAL_DOCS['children-privacy'].title}》
+                </Text>
               </Text>
             </View>
-          </>
-        )}
-
-        {error ? (
-          <Text style={{ color: theme.color.danger, fontSize: 13, marginTop: theme.spacing.sm }}>{error}</Text>
-        ) : null}
-
-        {needsConsent ? (
-          <Text style={{ color: theme.color.textTertiary, fontSize: 12, marginTop: theme.spacing.sm }}>
-            请先勾选下方的协议，才能获取验证码并登录
-          </Text>
-        ) : null}
-
-        <View style={{ height: theme.spacing.lg }} />
-        <PrimaryButton
-          title={mode === 'sms' ? '登录 / 注册' : '登录'}
-          onPress={() => void submit()}
-          loading={buttons.submit.loading}
-          disabled={buttons.submit.disabled}
-        />
-
-        {/*
-          合规要点（规范 §四「默认同意」）：
-          1. 用**勾选框**、且默认不勾选；
-          2. 协议名要能点开原文，而不是只写一行小字；
-          3. 未勾选时登录按钮不可点，也不再出现「登录即表示同意」这种替代同意的写法。
-        */}
-        <View style={{ marginTop: theme.spacing.md }}>
-          <Checkbox
-            value={acceptedPolicy}
-            onToggle={setAcceptedPolicy}
-            accessibilityLabel="我已阅读并同意用户服务协议与隐私政策"
-          >
-            <Text style={{ color: theme.color.textSecondary, fontSize: 13, lineHeight: 20 }}>
-              我已阅读并同意
-              <Text onPress={() => onOpenLegal('user-agreement')} style={{ color: theme.color.accent }}>
-                {LEGAL_DOCS['user-agreement'].label}
-              </Text>
-              与
-              <Text onPress={() => onOpenLegal('privacy-policy')} style={{ color: theme.color.accent }}>
-                {LEGAL_DOCS['privacy-policy'].label}
-              </Text>
-            </Text>
-          </Checkbox>
-          <Text
-            style={{
-              color: theme.color.textTertiary,
-              fontSize: 12,
-              marginTop: 6,
-              lineHeight: 18,
-            }}
-          >
-            未满 18 周岁请在监护人陪同下阅读；
-            <Text
-              onPress={() => onOpenLegal('children-privacy')}
-              style={{ color: theme.color.accent }}
-            >
-              {LEGAL_DOCS['children-privacy'].label}
-            </Text>
-          </Text>
-        </View>
-        </Card>
+          </View>
         </ScrollView>
       </Screen>
       {Platform.OS === 'ios' ? (
@@ -390,12 +477,65 @@ export function LoginScreen({
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  /**
+   * 微信登录页的节奏：顶部约 1/4 屏留白，内容贴左，底部留白收尾。
+   * 不用 `justifyContent: 'center'`——居中会让小屏 + 键盘时上下都挤。
+   */
   content: {
     flexGrow: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 32,
+    paddingHorizontal: 32,
+    paddingTop: 96,
+    paddingBottom: 40,
   },
+
+  brand: { marginBottom: 48 },
+  title: { fontSize: 30, fontWeight: '600', letterSpacing: -0.5 },
+
+  /** 登录方式：两个文字页签，选中态用下划线（不用带边框的分段控件） */
+  modeRow: { flexDirection: 'row', gap: 28, marginBottom: 8 },
+  modeItem: { paddingBottom: 8 },
+  modeText: { fontSize: 15 },
+  modeUnderline: { height: 2, marginTop: 6, borderRadius: 1 },
+
+  /** 一行输入：标签在左、输入在右，只有底部一条细线 */
+  field: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 18,
+  },
+  /** 宽度按最长的标签「验证码」算：窄了它就直接贴住输入框 */
+  fieldLabel: { width: 64, fontSize: 16, marginRight: 12 },
+  fieldInput: { flex: 1, fontSize: 16, padding: 0 },
+  codeAction: { paddingLeft: 12 },
+
+  helperRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 14,
+  },
+
+  submitWrap: { marginTop: 40 },
+
+  /** 协议区：勾选框与文字同处一行，文字整体成列（微信式） */
+  consent: {
+    marginTop: 28,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  consentCheckbox: { paddingTop: 2, marginRight: 10 },
+  consentBox: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  consentText: { flex: 1 },
+  consentLine: { fontSize: 12, lineHeight: 18 },
+  consentHint: { marginTop: 6 },
+
   accessory: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -407,18 +547,5 @@ const styles = StyleSheet.create({
     backgroundColor: '#F2F2F7',
   },
   accessoryDone: { fontSize: 16, fontWeight: '600' },
-  title: { fontSize: 34, fontWeight: '600', letterSpacing: -0.5 },
-  label: { fontSize: 13, marginBottom: 6 },
-  input: { height: 48, borderWidth: 1, paddingHorizontal: 12, fontSize: 16 },
-  inputBox: { height: 48, borderWidth: 1, paddingHorizontal: 12, justifyContent: 'center' },
-  inputInner: { flex: 1, fontSize: 16, padding: 0, backgroundColor: 'transparent' },
-  codeRow: { flexDirection: 'row', alignItems: 'center' },
-  codeInput: { flex: 1 },
-  codeButton: { width: 132, marginLeft: 12 },
-  helperRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 10,
-  },
 });
+

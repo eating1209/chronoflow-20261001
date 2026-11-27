@@ -1167,13 +1167,13 @@ class AgentModuleTest {
         assertThat(USED_PHONES.add(phone))
                 .withFailMessage("测试手机号 %s 被两个用例复用了，换一个没用过的号", phone)
                 .isTrue();
-        JsonNode sent = postJson("/api/v1/auth/sms/code", "{\"phone\":\"" + phone + "\"}");
+        JsonNode sent = postJson("/api/v1/auth/sms/code", "{\"account\":\"" + phone + "\"}");
         String code = sent.path("data").path("debugCode").asText();
         // 拿不到回显验证码（撞频控 / 通道变了）时在这里就说清楚，别让它以「验证码不能为空」的
         // 样子出现在几步之后的登录上 —— 那样的报错会被误读成业务坏了
         assertThat(code).withFailMessage("取验证码失败：%s", sent).isNotBlank();
         String registerToken = postJson("/api/v1/auth/login/sms",
-                "{\"phone\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}")
+                "{\"account\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}")
                 .path("data").path("registerToken").asText();
         return postJsonWithBearer("/api/v1/identities/personal", registerToken,
                 "{\"nickname\":\"" + nickname + "\",\"deviceId\":\"device-1\"}");

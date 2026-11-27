@@ -63,13 +63,15 @@ public class AuthService {
      * 手机号 + 密码登录。走与短信登录完全相同的身份列表流程，
      * 便于账号同时拥有个人身份与多个组织身份时统一选择（spec §3.3）。
      */
-    public SmsLoginResponse loginByPassword(String phone, String password, String deviceId) {
+    public SmsLoginResponse loginByPassword(String rawAccount, String password, String deviceId) {
+        // 手机号或邮箱由服务端识别：客户端只有一个输入框，不该自己判断
+        AccountIdentifier identifier = AccountIdentifier.parse(rawAccount);
+        String subject = identifier.value();
         // 先看有没有被锁：不加这一道，攻击者可以对 11 位手机号慢慢穷举，密码强度形同虚设
-        if (verificationCodeStore.countPasswordFailures(phone) >= properties.getPasswordMaxAttempts()) {
+        if (verificationCodeStore.countPasswordFailures(subject) >= properties.getPasswordMaxAttempts()) {
             throw BizException.of(ErrorCode.PASSWORD_LOCKED);
         }
-        Account account = accountMapper.selectOne(
-                new LambdaQueryWrapper<Account>().eq(Account::getPhone, phone));
+        Account account = findAccount(identifier);
         if (account == null || account.getPasswordHash() == null) {
             throw BizException.of(ErrorCode.PASSWORD_NOT_SET);
         }
@@ -78,13 +80,13 @@ public class AuthService {
         }
         if (!passwordEncoder.matches(password, account.getPasswordHash())) {
             long failures = verificationCodeStore.incrementPasswordFailure(
-                    phone, properties.getPasswordLockWindow());
+                    subject, properties.getPasswordLockWindow());
             if (failures >= properties.getPasswordMaxAttempts()) {
                 throw BizException.of(ErrorCode.PASSWORD_LOCKED);
             }
-            throw BizException.of(ErrorCode.PASSWORD_MISMATCH, "手机号或密码不正确");
+            throw BizException.of(ErrorCode.PASSWORD_MISMATCH, "手机号 / 邮箱或密码不正确");
         }
-        verificationCodeStore.clearPasswordFailure(phone);
+        verificationCodeStore.clearPasswordFailure(subject);
         account.setLastLoginAt(OffsetDateTime.now(ZoneOffset.UTC));
         accountMapper.updateById(account);
         return issueLoginChallenge(account, deviceId);
@@ -98,20 +100,21 @@ public class AuthService {
      * 而是明确拒绝，让用户去登录或走「忘记密码」。
      */
     @Transactional
-    public SmsLoginResponse registerWithPassword(String phone, String code, String newPassword, String deviceId) {
+    public SmsLoginResponse registerWithPassword(String rawAccount, String code, String newPassword,
+                                                 String deviceId) {
         PasswordPolicy.validate(newPassword);
-        verificationCodeService.verify(phone, code);
+        AccountIdentifier identifier = AccountIdentifier.parse(rawAccount);
+        verificationCodeService.verify(identifier.value(), code);
 
-        Account existing = accountMapper.selectOne(
-                new LambdaQueryWrapper<Account>().eq(Account::getPhone, phone));
+        Account existing = findAccount(identifier);
         if (existing != null) {
             throw BizException.of(ErrorCode.PARAM_INVALID,
-                    "该手机号已注册，请直接登录；想设置密码可在「我的 → 账号与安全 → 登录密码」设置，或使用「忘记密码」重置");
+                    "该账号已注册，请直接登录；想设置密码可在「我的 → 账号与安全 → 登录密码」设置，或使用「忘记密码」重置");
         }
-        Account account = createAccount(phone);
+        Account account = createAccount(identifier);
         account.setPasswordHash(passwordEncoder.encode(newPassword));
         accountMapper.updateById(account);
-        verificationCodeStore.clearPasswordFailure(phone);
+        verificationCodeStore.clearPasswordFailure(identifier.value());
         return issueLoginChallenge(account, deviceId);
     }
 
@@ -122,14 +125,14 @@ public class AuthService {
      * 但重置成功后要把**所有设备**的刷新令牌吊销（和改密一致），否则偷到令牌的人还能继续用。
      */
     @Transactional
-    public void resetPasswordBySms(String phone, String code, String newPassword) {
+    public void resetPasswordBySms(String rawAccount, String code, String newPassword) {
         PasswordPolicy.validate(newPassword);
-        verificationCodeService.verify(phone, code);
+        AccountIdentifier identifier = AccountIdentifier.parse(rawAccount);
+        verificationCodeService.verify(identifier.value(), code);
 
-        Account account = accountMapper.selectOne(
-                new LambdaQueryWrapper<Account>().eq(Account::getPhone, phone));
+        Account account = findAccount(identifier);
         if (account == null) {
-            throw BizException.of(ErrorCode.PARAM_INVALID, "该手机号尚未注册");
+            throw BizException.of(ErrorCode.PARAM_INVALID, "该账号尚未注册");
         }
         if (STATUS_DISABLED.equals(account.getStatus())) {
             throw BizException.of(ErrorCode.ACCOUNT_DISABLED);
@@ -137,20 +140,20 @@ public class AuthService {
         account.setPasswordHash(passwordEncoder.encode(newPassword));
         accountMapper.updateById(account);
         tokenService.revokeAllForAccount(account.getId());
-        verificationCodeStore.clearPasswordFailure(phone);
+        verificationCodeStore.clearPasswordFailure(identifier.value());
     }
 
     /**
      * 手机号 + 验证码登录。注册与登录合一：手机号首次登录时自动创建账号。
      */
     @Transactional
-    public SmsLoginResponse loginBySms(String phone, String code, String deviceId) {
-        verificationCodeService.verify(phone, code);
+    public SmsLoginResponse loginBySms(String rawAccount, String code, String deviceId) {
+        AccountIdentifier identifier = AccountIdentifier.parse(rawAccount);
+        verificationCodeService.verify(identifier.value(), code);
 
-        Account account = accountMapper.selectOne(
-                new LambdaQueryWrapper<Account>().eq(Account::getPhone, phone));
+        Account account = findAccount(identifier);
         if (account == null) {
-            account = createAccount(phone);
+            account = createAccount(identifier);
         } else {
             if (STATUS_DISABLED.equals(account.getStatus())) {
                 throw BizException.of(ErrorCode.ACCOUNT_DISABLED);
@@ -202,7 +205,7 @@ public class AuthService {
         Identity identity = new Identity();
         identity.setAccountId(accountId);
         identity.setIdentityType(Identity.TYPE_PERSONAL);
-        identity.setNickname(StringUtils.hasText(nickname) ? nickname : defaultNickname(account.getPhone()));
+        identity.setNickname(StringUtils.hasText(nickname) ? nickname : defaultNickname(primaryContact(account)));
         identity.setAvatarUrl(avatarUrl);
         identity.setStatus(STATUS_ACTIVE);
         identityMapper.insert(identity);
@@ -287,15 +290,41 @@ public class AuthService {
                 .orElseThrow(() -> BizException.of(ErrorCode.IDENTITY_UNAVAILABLE));
     }
 
-    private Account createAccount(String phone) {
+    /**
+     * 新建账号。手机号与邮箱二选一：**只有被验证过的那个字段才写值**，
+     * 另一个留空——把没验证过的联系方式写进 account 会让「账号已存在」判断出错。
+     */
+    private Account createAccount(AccountIdentifier identifier) {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         Account account = new Account();
-        account.setPhone(phone);
-        account.setPhoneVerifiedAt(now);
+        if (identifier.isPhone()) {
+            account.setPhone(identifier.value());
+            account.setPhoneVerifiedAt(now);
+        } else {
+            account.setEmail(identifier.value());
+            account.setEmailVerifiedAt(now);
+        }
         account.setStatus(STATUS_ACTIVE);
         account.setLastLoginAt(now);
         accountMapper.insert(account);
         return account;
+    }
+
+    /**
+     * 按识别结果查账号。手机号查 phone 列、邮箱查 email 列（都已建唯一索引）。
+     *
+     * <p>为什么不用一条 `phone = ? OR email = ?`：那样两列都要走索引，
+     * 优化器可能选错；而且一旦两个账号分别占了同一个字符串的手机号与邮箱，
+     * OR 查询会直接抛「查到多条」。
+     */
+    private Account findAccount(AccountIdentifier identifier) {
+        LambdaQueryWrapper<Account> query = new LambdaQueryWrapper<>();
+        if (identifier.isPhone()) {
+            query.eq(Account::getPhone, identifier.value());
+        } else {
+            query.eq(Account::getEmail, identifier.value());
+        }
+        return accountMapper.selectOne(query.last("LIMIT 1"));
     }
 
     private Identity requireOwnedIdentity(Long accountId, Long identityId) {
@@ -341,7 +370,23 @@ public class AuthService {
         return account;
     }
 
-    private String defaultNickname(String phone) {
-        return phone.length() >= 4 ? "用户" + phone.substring(phone.length() - 4) : "用户";
+    /** 账号的主联系方式：优先手机号，没有就用邮箱（两者必有一个）。 */
+    private String primaryContact(Account account) {
+        return StringUtils.hasText(account.getPhone()) ? account.getPhone() : account.getEmail();
+    }
+
+    /**
+     * 默认昵称：手机号取后四位，邮箱取 @ 前面那段（再截断）。
+     * 不直接用完整账号——我的页会把昵称显示在头像旁边，暴露完整手机号/邮箱不合适。
+     */
+    private String defaultNickname(String account) {
+        String base = account == null ? "" : account;
+        if (base.contains("@")) {
+            base = base.substring(0, base.indexOf('@'));
+        }
+        if (base.length() >= 4) {
+            return "用户" + base.substring(base.length() - 4);
+        }
+        return "用户";
     }
 }

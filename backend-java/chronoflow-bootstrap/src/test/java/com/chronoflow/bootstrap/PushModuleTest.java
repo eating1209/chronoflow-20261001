@@ -201,10 +201,10 @@ class PushModuleTest {
     }
 
     private JsonNode registerAccountWithPersonalIdentity(String phone, String nickname) throws Exception {
-        String code = postJson("/api/v1/auth/sms/code", "{\"phone\":\"" + phone + "\"}")
+        String code = postJson("/api/v1/auth/sms/code", "{\"account\":\"" + phone + "\"}")
                 .path("data").path("debugCode").asText();
         String registerToken = postJson("/api/v1/auth/login/sms",
-                "{\"phone\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}")
+                "{\"account\":\"" + phone + "\",\"code\":\"" + code + "\",\"deviceId\":\"device-1\"}")
                 .path("data").path("registerToken").asText();
         return postJsonWithBearer("/api/v1/identities/personal", registerToken,
                 "{\"nickname\":\"" + nickname + "\",\"deviceId\":\"device-1\"}");
